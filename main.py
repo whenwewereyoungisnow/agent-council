@@ -1,15 +1,54 @@
 import json
+import os
+import secrets
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-OLLAMA_URL = "http://localhost:11434"
-MODEL = "qwen3.6:latest"
+# ─────────── Anthropic config ───────────
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+if not ANTHROPIC_API_KEY:
+    raise RuntimeError(
+        "ANTHROPIC_API_KEY environment variable is required. "
+        "Set it locally with `export ANTHROPIC_API_KEY=sk-ant-...` "
+        "or in the Railway service variables."
+    )
 
+MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+MAX_TOKENS_AGENT = 1024
+MAX_TOKENS_WRAP = 1024
+
+# ─────────── Auth (HTTP Basic, gated by env vars) ───────────
+COUNCIL_USER = os.environ.get("COUNCIL_USER")
+COUNCIL_PASSWORD = os.environ.get("COUNCIL_PASSWORD")
+_basic = HTTPBasic(auto_error=False)
+
+
+def require_auth(creds: HTTPBasicCredentials | None = Depends(_basic)) -> None:
+    """No-op locally (env vars unset). Enforces Basic Auth in deployment."""
+    if not COUNCIL_USER or not COUNCIL_PASSWORD:
+        return
+    unauthorized = HTTPException(
+        status_code=401,
+        detail="Unauthorized",
+        headers={"WWW-Authenticate": 'Basic realm="Council"'},
+    )
+    if creds is None:
+        raise unauthorized
+    user_ok = secrets.compare_digest(creds.username, COUNCIL_USER)
+    pass_ok = secrets.compare_digest(creds.password, COUNCIL_PASSWORD)
+    if not (user_ok and pass_ok):
+        raise unauthorized
+
+
+# ─────────── Personas ───────────
 ROOT = Path(__file__).parent
 
 
@@ -32,9 +71,10 @@ def _load_personas() -> list[dict]:
 
 PERSONAS: list[dict] = _load_personas()
 
-app = FastAPI()
+app = FastAPI(dependencies=[Depends(require_auth)])
 
 
+# ─────────── Models ───────────
 class PitchBody(BaseModel):
     pitch: str = Field(..., min_length=1)
 
@@ -50,6 +90,7 @@ class WrapBody(BaseModel):
     transcript: list[TranscriptEntry] = Field(..., min_length=1)
 
 
+# ─────────── Formatting ───────────
 def fmt_turn(agent: str, round_num: int, content: str) -> str:
     return f"[{agent}, round {round_num}]: {content}"
 
@@ -76,19 +117,64 @@ def parse_synthesis(raw: str) -> dict:
     return {"synthesis": raw.strip(), "summary": ""}
 
 
-@app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(ROOT / "templates" / "index.html")
+# ─────────── Anthropic client ───────────
+def _anthropic_headers() -> dict:
+    return {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "content-type": "application/json",
+    }
 
 
-@app.get("/health/ollama")
-async def health_ollama() -> dict:
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(f"{OLLAMA_URL}/api/version")
+def _claude_payload(system: str, user: str, *, stream: bool, max_tokens: int) -> dict:
+    return {
+        "model": MODEL,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+        "stream": stream,
+    }
+
+
+async def stream_claude_text(client: httpx.AsyncClient, system: str, user: str):
+    """Yields text chunks from a streaming /v1/messages call."""
+    payload = _claude_payload(system, user, stream=True, max_tokens=MAX_TOKENS_AGENT)
+    async with client.stream(
+        "POST", ANTHROPIC_URL, headers=_anthropic_headers(), json=payload
+    ) as resp:
         resp.raise_for_status()
-        return resp.json()
+        async for line in resp.aiter_lines():
+            if not line.startswith("data: "):
+                continue
+            try:
+                chunk = json.loads(line[6:])
+            except json.JSONDecodeError:
+                continue
+            if chunk.get("type") == "content_block_delta":
+                delta = chunk.get("delta") or {}
+                if delta.get("type") == "text_delta":
+                    text = delta.get("text", "")
+                    if text:
+                        yield text
+            elif chunk.get("type") == "message_stop":
+                return
 
 
+async def claude_chat(
+    client: httpx.AsyncClient, system: str, user: str, max_tokens: int
+) -> str:
+    """Non-streaming /v1/messages call. Returns concatenated text content."""
+    payload = _claude_payload(system, user, stream=False, max_tokens=max_tokens)
+    resp = await client.post(
+        ANTHROPIC_URL, headers=_anthropic_headers(), json=payload, timeout=180.0
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    blocks = body.get("content", [])
+    return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+
+
+# ─────────── Prompt construction ───────────
 ROUND2_SYSTEM_SUFFIX = (
     "\n\nYou have heard the others speak. "
     "Engage with specific points they made. "
@@ -96,9 +182,10 @@ ROUND2_SYSTEM_SUFFIX = (
 )
 
 
-def build_messages(
+def build_prompt(
     persona: dict, pitch: str, prior: list[dict], round_num: int
-) -> list[dict]:
+) -> tuple[str, str]:
+    """Returns (system, user) for the Anthropic API."""
     system = persona["system"]
     if round_num == 2:
         system += ROUND2_SYSTEM_SUFFIX
@@ -113,10 +200,13 @@ def build_messages(
         f"Now respond as the {persona['name']}. "
         "Speak in your own voice. Two paragraphs maximum."
     )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": "\n\n".join(parts)},
-    ]
+    return system, "\n\n".join(parts)
+
+
+# ─────────── Routes ───────────
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse(ROOT / "templates" / "index.html")
 
 
 @app.post("/pitch")
@@ -133,40 +223,22 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
                             "data": json.dumps({"agent": name, "round": round_num}),
                         }
 
-                        payload = {
-                            "model": MODEL,
-                            "stream": True,
-                            "think": False,
-                            "options": {"num_ctx": 16384},
-                            "messages": build_messages(
-                                persona, body.pitch, transcript, round_num
-                            ),
-                        }
-
+                        system, user = build_prompt(
+                            persona, body.pitch, transcript, round_num
+                        )
                         chunks: list[str] = []
-                        async with client.stream(
-                            "POST", f"{OLLAMA_URL}/api/chat", json=payload
-                        ) as resp:
-                            resp.raise_for_status()
-                            async for line in resp.aiter_lines():
-                                if not line:
-                                    continue
-                                chunk = json.loads(line)
-                                token = chunk.get("message", {}).get("content", "")
-                                if token:
-                                    chunks.append(token)
-                                    yield {
-                                        "event": "token",
-                                        "data": json.dumps(
-                                            {
-                                                "agent": name,
-                                                "round": round_num,
-                                                "token": token,
-                                            }
-                                        ),
+                        async for text in stream_claude_text(client, system, user):
+                            chunks.append(text)
+                            yield {
+                                "event": "token",
+                                "data": json.dumps(
+                                    {
+                                        "agent": name,
+                                        "round": round_num,
+                                        "token": text,
                                     }
-                                if chunk.get("done"):
-                                    break
+                                ),
+                            }
 
                         transcript.append(
                             {
@@ -175,7 +247,6 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
                                 "content": "".join(chunks),
                             }
                         )
-
                         yield {
                             "event": "agent_done",
                             "data": json.dumps({"agent": name, "round": round_num}),
@@ -200,34 +271,19 @@ async def wrap(body: WrapBody) -> dict:
         'Format as JSON: {"synthesis": "...", "summary": "..."}. '
         "JSON only, no preamble."
     )
-
-    payload = {
-        "model": MODEL,
-        "stream": False,
-        "think": False,
-        "options": {"num_ctx": 16384},
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are the council secretary. "
-                    "Below is a transcript of a council discussion."
-                ),
-            },
-            {"role": "user", "content": user_message},
-        ],
-    }
+    system = (
+        "You are the council secretary. "
+        "Below is a transcript of a council discussion."
+    )
 
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
-            resp = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
-            resp.raise_for_status()
-            raw = resp.json().get("message", {}).get("content", "")
+            raw = await claude_chat(client, system, user_message, MAX_TOKENS_WRAP)
     except httpx.ConnectError:
-        raise HTTPException(503, "Cannot reach Ollama at localhost:11434. Is it running?")
+        raise HTTPException(503, "Cannot reach the Anthropic API.")
     except httpx.TimeoutException:
         raise HTTPException(504, "Synthesis timed out.")
     except httpx.HTTPStatusError as e:
-        raise HTTPException(502, f"Ollama returned HTTP {e.response.status_code}")
+        raise HTTPException(502, f"Anthropic returned HTTP {e.response.status_code}")
 
     return parse_synthesis(raw)

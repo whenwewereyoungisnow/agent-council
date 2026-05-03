@@ -10,5 +10,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Secrets
+.env
+*.env
+
 # Project
 council.db
