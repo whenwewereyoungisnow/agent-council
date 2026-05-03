@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Local Council</title>
+  <style>
+    :root {
+      --bg: #fafafa;
+      --fg: #1a1a1a;
+      --muted: #666;
+      --border: #ddd;
+      --card: #ffffff;
+      --accent: #2563eb;
+      --error: #b91c1c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 720px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.5;
+    }
+    h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
+    p.lede { margin: 0 0 1.5rem; color: var(--muted); }
+    textarea {
+      width: 100%;
+      min-height: 6rem;
+      padding: 0.75rem;
+      font-family: inherit;
+      font-size: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--card);
+      resize: vertical;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 0.5rem;
+    }
+    button {
+      padding: 0.55rem 1.1rem;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 1rem;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status { color: var(--muted); font-size: 0.9rem; }
+    .status.error { color: var(--error); }
+    #transcript {
+      margin-top: 1.5rem;
+      min-height: 4rem;
+    }
+    #transcript:empty::before {
+      content: "Awaiting your pitch.";
+      color: var(--muted);
+      display: block;
+      padding: 1rem 1.25rem;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .round-header {
+      margin: 1.5rem 0 0.75rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .round-header:first-child { margin-top: 0; }
+    .agent-block {
+      padding: 1rem 1.25rem;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-bottom: 0.75rem;
+    }
+    .agent-name {
+      font-weight: 600;
+      font-size: 0.95rem;
+      margin-bottom: 0.5rem;
+      color: var(--accent);
+    }
+    .agent-content {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      font-size: 1rem;
+    }
+    .agent-block.speaking .agent-name::after {
+      content: " ▍";
+      color: var(--muted);
+    }
+    #wrap-controls {
+      margin-top: 1.25rem;
+      display: none;
+    }
+    #wrap-controls.visible { display: flex; align-items: center; gap: 0.75rem; }
+    #wrap-btn { background: #111827; }
+    #synthesis {
+      margin-top: 1.25rem;
+      padding: 1rem 1.25rem;
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      border-radius: 6px;
+      display: none;
+    }
+    #synthesis.visible { display: block; }
+    #synthesis h2 {
+      margin: 0 0 0.5rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #9a3412;
+    }
+    #synthesis-body { white-space: pre-wrap; word-wrap: break-word; }
+    #synthesis-summary {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid #fed7aa;
+      font-style: italic;
+      color: #7c2d12;
+    }
+  </style>
+</head>
+<body>
+  <h1>Local Council</h1>
+  <p class="lede">Drop a pitch. The council responds.</p>
+
+  <textarea id="pitch" placeholder="What's on your mind?"></textarea>
+  <div class="controls">
+    <button id="submit">Convene</button>
+    <span id="status" class="status"></span>
+  </div>
+  <div id="transcript"></div>
+
+  <div id="wrap-controls">
+    <button id="wrap-btn">Wrap</button>
+    <span id="wrap-status" class="status"></span>
+  </div>
+
+  <div id="synthesis">
+    <h2>Synthesis</h2>
+    <div id="synthesis-body"></div>
+    <div id="synthesis-summary"></div>
+  </div>
+
+  <script>
+    const pitchEl = document.getElementById("pitch");
+    const submitEl = document.getElementById("submit");
+    const statusEl = document.getElementById("status");
+    const transcriptEl = document.getElementById("transcript");
+    const wrapControlsEl = document.getElementById("wrap-controls");
+    const wrapBtnEl = document.getElementById("wrap-btn");
+    const wrapStatusEl = document.getElementById("wrap-status");
+    const synthesisEl = document.getElementById("synthesis");
+    const synthesisBodyEl = document.getElementById("synthesis-body");
+    const synthesisSummaryEl = document.getElementById("synthesis-summary");
+
+    const transcript = [];
+    const tokenBuffers = {};
+    let currentPitch = "";
+    let wrapAbort = null;
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.classList.toggle("error", isError);
+    }
+
+    function parseSSEFrame(frame) {
+      let event = "message";
+      let data = "";
+      for (const raw of frame.split("\n")) {
+        if (!raw || raw.startsWith(":")) continue;
+        if (raw.startsWith("event:")) {
+          event = raw.slice(6).trim();
+        } else if (raw.startsWith("data:")) {
+          data += (data ? "\n" : "") + raw.slice(5).replace(/^ /, "");
+        }
+      }
+      return { event, data };
+    }
+
+    const blocks = {};
+    const rounds = {};
+    let currentBlock = null;
+
+    function resetTranscript() {
+      if (wrapAbort) { wrapAbort.abort(); wrapAbort = null; }
+      transcriptEl.textContent = "";
+      for (const k in blocks) delete blocks[k];
+      for (const k in rounds) delete rounds[k];
+      for (const k in tokenBuffers) delete tokenBuffers[k];
+      currentBlock = null;
+      transcript.length = 0;
+      wrapControlsEl.classList.remove("visible");
+      wrapStatusEl.textContent = "";
+      wrapStatusEl.classList.remove("error");
+      synthesisEl.classList.remove("visible");
+      synthesisBodyEl.textContent = "";
+      synthesisSummaryEl.textContent = "";
+      wrapBtnEl.disabled = false;
+    }
+
+    function ensureRound(round) {
+      if (rounds[round]) return;
+      const header = document.createElement("div");
+      header.className = "round-header";
+      header.textContent = `Round ${round}`;
+      transcriptEl.appendChild(header);
+      rounds[round] = header;
+    }
+
+    function ensureBlock(agent, round) {
+      const key = `${agent}|${round}`;
+      if (blocks[key]) return blocks[key];
+      ensureRound(round);
+      const block = document.createElement("div");
+      block.className = "agent-block";
+      const name = document.createElement("div");
+      name.className = "agent-name";
+      name.textContent = agent;
+      const content = document.createElement("div");
+      content.className = "agent-content";
+      block.appendChild(name);
+      block.appendChild(content);
+      transcriptEl.appendChild(block);
+      blocks[key] = { block, content };
+      return blocks[key];
+    }
+
+    async function sendPitch() {
+      const pitch = pitchEl.value.trim();
+      if (!pitch) return;
+
+      submitEl.disabled = true;
+      resetTranscript();
+      currentPitch = pitch;
+      setStatus("Connecting to council...");
+
+      try {
+        const resp = await fetch("/pitch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pitch }),
+        });
+
+        if (!resp.ok) {
+          setStatus(`HTTP ${resp.status}`, true);
+          return;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        setStatus("Streaming...");
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+
+          let sepIdx;
+          while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
+            const frame = buffer.slice(0, sepIdx);
+            buffer = buffer.slice(sepIdx + 2);
+            if (!frame.trim()) continue;
+
+            const { event, data } = parseSSEFrame(frame);
+            if (!data) continue;
+
+            let payload;
+            try { payload = JSON.parse(data); }
+            catch { continue; }
+
+            if (event === "agent_speaking") {
+              const b = ensureBlock(payload.agent, payload.round);
+              b.block.classList.add("speaking");
+              currentBlock = b;
+              tokenBuffers[`${payload.agent}|${payload.round}`] = "";
+              setStatus(`${payload.agent} speaking (round ${payload.round})...`);
+            } else if (event === "token") {
+              if (currentBlock) currentBlock.content.textContent += payload.token;
+              const key = `${payload.agent}|${payload.round}`;
+              tokenBuffers[key] = (tokenBuffers[key] || "") + payload.token;
+            } else if (event === "agent_done") {
+              const key = `${payload.agent}|${payload.round}`;
+              if (blocks[key]) blocks[key].block.classList.remove("speaking");
+              transcript.push({
+                agent: payload.agent,
+                round: payload.round,
+                content: tokenBuffers[key] || "",
+              });
+            } else if (event === "discussion_complete") {
+              setStatus("Done.");
+              wrapControlsEl.classList.add("visible");
+            } else if (event === "error") {
+              setStatus(`Error: ${payload.message}`, true);
+            }
+          }
+        }
+      } catch (e) {
+        setStatus(`Connection error: ${e.message}`, true);
+      } finally {
+        submitEl.disabled = false;
+      }
+    }
+
+    async function wrapDiscussion() {
+      if (!transcript.length) return;
+      if (wrapAbort) wrapAbort.abort();
+      wrapAbort = new AbortController();
+      const myAbort = wrapAbort;
+
+      wrapBtnEl.disabled = true;
+      wrapStatusEl.textContent = "Synthesizing...";
+      wrapStatusEl.classList.remove("error");
+      try {
+        const resp = await fetch("/wrap", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pitch: currentPitch, transcript }),
+          signal: myAbort.signal,
+        });
+        if (!resp.ok) {
+          let msg = `HTTP ${resp.status}`;
+          try {
+            const err = await resp.json();
+            if (err && err.detail) msg = err.detail;
+          } catch { /* response body not JSON */ }
+          wrapStatusEl.textContent = msg;
+          wrapStatusEl.classList.add("error");
+          return;
+        }
+        const data = await resp.json();
+        synthesisBodyEl.textContent = data.synthesis || "";
+        synthesisSummaryEl.textContent = data.summary ? `Summary: ${data.summary}` : "";
+        synthesisEl.classList.add("visible");
+        wrapStatusEl.textContent = "";
+      } catch (e) {
+        if (e.name === "AbortError") return;
+        wrapStatusEl.textContent = `Error: ${e.message}`;
+        wrapStatusEl.classList.add("error");
+      } finally {
+        if (wrapAbort === myAbort) wrapAbort = null;
+        wrapBtnEl.disabled = false;
+      }
+    }
+
+    submitEl.addEventListener("click", sendPitch);
+    wrapBtnEl.addEventListener("click", wrapDiscussion);
+    pitchEl.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") sendPitch();
+    });
+  </script>
+</body>
+</html>
