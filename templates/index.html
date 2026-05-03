@@ -1,366 +1,951 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Local Council</title>
-  <style>
-    :root {
-      --bg: #fafafa;
-      --fg: #1a1a1a;
-      --muted: #666;
-      --border: #ddd;
-      --card: #ffffff;
-      --accent: #2563eb;
-      --error: #b91c1c;
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>The Council</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,800;1,9..144,400;1,9..144,500;1,9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:          #F5F1E8;
+    --bg-soft:     #EDE7D9;
+    --ink:         #1A1816;
+    --ink-soft:    #5C564E;
+    --ink-faint:   #8A8377;
+    --rule:        #D9D2C2;
+    --accent:      #B33A2A;
+    --accent-soft: #F0DDD7;
+
+    --strategist:   #2D4A6B;
+    --skeptic:      #7A2E2E;
+    --empath:       #B5654A;
+    --future-self:  #5C6E4A;
+    --operator:     #B8893A;
+
+    --space-1: 0.5rem;
+    --space-2: 1rem;
+    --space-3: 1.5rem;
+    --space-4: 2.5rem;
+    --space-5: 4rem;
+    --space-6: 6rem;
+
+    --serif: "Fraunces", Georgia, "Times New Roman", serif;
+    --sans:  "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
+
+  .page {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: var(--space-6) 2rem var(--space-6);
+  }
+
+  /* ─────────── Wordmark ─────────── */
+  .masthead {
+    margin-bottom: var(--space-6);
+  }
+  .wordmark {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: clamp(2rem, 5vw, 2.625rem);
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+    margin: 0;
+    color: var(--ink);
+    font-variation-settings: "opsz" 144;
+  }
+  .masthead-sub {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-top: 0.875rem;
+  }
+  .masthead-sub .dot {
+    display: inline-block;
+    margin: 0 0.5em;
+    color: var(--ink-faint);
+  }
+
+  /* ─────────── Pitch input ─────────── */
+  .pitch {
+    margin-top: var(--space-5);
+  }
+  .pitch-label {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: var(--space-2);
+    display: block;
+  }
+  .pitch-textarea {
+    width: 100%;
+    min-height: 7em;
+    border: none;
+    border-bottom: 1px solid var(--rule);
+    background: transparent;
+    color: var(--ink);
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: clamp(1.25rem, 2.5vw, 1.5rem);
+    line-height: 1.5;
+    padding: 0 0 var(--space-3) 0;
+    resize: vertical;
+    outline: none;
+    transition: border-color 220ms ease;
+    font-variation-settings: "opsz" 36;
+  }
+  .pitch-textarea::placeholder {
+    font-style: italic;
+    color: var(--ink-faint);
+    opacity: 0.7;
+  }
+  .pitch-textarea:focus {
+    border-bottom-color: var(--ink-soft);
+  }
+
+  .pitch-actions {
+    margin-top: var(--space-3);
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+  }
+  .pitch-hint {
+    font-size: 13px;
+    color: var(--ink-faint);
+    font-style: italic;
+  }
+
+  /* ─────────── Calm text button ─────────── */
+  .text-btn {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4em;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: 0.005em;
+    transition: color 200ms ease, transform 200ms ease;
+  }
+  .text-btn .arrow {
+    transition: transform 250ms cubic-bezier(.2,.6,.2,1);
+    display: inline-block;
+  }
+  .text-btn:hover {
+    color: var(--accent);
+  }
+  .text-btn:hover .arrow {
+    transform: translateX(3px);
+  }
+  .text-btn:disabled {
+    color: var(--ink-faint);
+    cursor: default;
+  }
+  .text-btn:disabled:hover .arrow {
+    transform: none;
+  }
+
+  /* ─────────── Convening state ─────────── */
+  .convening {
+    margin-top: var(--space-3);
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 1.125rem;
+    color: var(--ink-soft);
+    display: flex;
+    align-items: center;
+    gap: 0.7em;
+  }
+  .pulse-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 1.4s ease-in-out infinite;
+    display: inline-block;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.35; transform: scale(0.85); }
+    50%      { opacity: 1;    transform: scale(1.15); }
+  }
+
+  /* ─────────── Memory line ─────────── */
+  .memory-line {
+    margin-top: var(--space-5);
+    font-size: 13px;
+    color: var(--ink-faint);
+    font-style: italic;
+    letter-spacing: 0.005em;
+  }
+
+  /* ─────────── Round markers ─────────── */
+  .round-marker {
+    margin: var(--space-5) 0 var(--space-4);
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    color: var(--ink-faint);
+  }
+  .round-marker.round-two {
+    margin-top: var(--space-6);
+  }
+  .round-marker .rule {
+    flex: 1;
+    height: 1px;
+    background: var(--rule);
+  }
+  .round-marker .label {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  /* ─────────── Member contributions ─────────── */
+  .transcript {
+    margin-top: var(--space-2);
+  }
+  .contribution {
+    position: relative;
+    padding-left: var(--space-3);
+    margin-bottom: var(--space-4);
+    border-left: 2px solid var(--member-accent, var(--rule));
+  }
+  .contribution:last-child {
+    margin-bottom: 0;
+  }
+  .contribution-header {
+    margin-bottom: var(--space-2);
+  }
+  .member-name {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 1.375rem;
+    line-height: 1.1;
+    color: var(--member-accent, var(--ink));
+    letter-spacing: -0.005em;
+    font-variation-settings: "opsz" 36;
+  }
+  .member-seat {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-top: 0.4rem;
+    display: block;
+  }
+  .contribution-body {
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.7;
+    color: var(--ink);
+    white-space: pre-wrap;
+  }
+  .contribution-body p {
+    margin: 0 0 1em 0;
+  }
+  .contribution-body p:last-child {
+    margin-bottom: 0;
+  }
+
+  .caret {
+    display: inline-block;
+    width: 0.08em;
+    height: 1.05em;
+    background: var(--member-accent, var(--ink));
+    margin-left: 0.08em;
+    vertical-align: text-bottom;
+    transform: translateY(0.18em);
+    animation: caret-blink 1s steps(1) infinite;
+  }
+  @keyframes caret-blink {
+    0%, 49%   { opacity: 1; }
+    50%, 100% { opacity: 0.5; }
+  }
+
+  /* per-member colour mapping */
+  .m-strategist  { --member-accent: var(--strategist); }
+  .m-skeptic     { --member-accent: var(--skeptic); }
+  .m-empath      { --member-accent: var(--empath); }
+  .m-future-self { --member-accent: var(--future-self); }
+  .m-operator    { --member-accent: var(--operator); }
+
+  /* ─────────── Synthesis ─────────── */
+  .synthesis-action {
+    margin-top: var(--space-5);
+  }
+  .synthesis {
+    margin-top: var(--space-5);
+    padding: var(--space-4) 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .synthesis-body {
+    font-family: var(--serif);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 1.3125rem;
+    line-height: 1.6;
+    color: var(--ink);
+    margin: 0;
+    font-variation-settings: "opsz" 60;
+    text-wrap: pretty;
+  }
+  .synthesis-takeaway {
+    margin-top: var(--space-3);
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--ink-faint);
+    letter-spacing: 0.005em;
+  }
+  .synthesis-takeaway-label {
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin-right: 0.6em;
+    color: var(--ink-faint);
+  }
+
+  /* ─────────── Archive ─────────── */
+  .archive {
+    margin-top: var(--space-6);
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--rule);
+  }
+  .archive-title {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 var(--space-3) 0;
+  }
+  .archive-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .archive-row {
+    display: grid;
+    grid-template-columns: 7.5rem 1fr;
+    gap: var(--space-2);
+    align-items: baseline;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid var(--rule);
+    cursor: pointer;
+    transition: color 180ms ease;
+  }
+  .archive-row:last-child {
+    border-bottom: none;
+  }
+  .archive-date {
+    font-family: var(--sans);
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    color: var(--ink-faint);
+    letter-spacing: 0.01em;
+  }
+  .archive-summary {
+    font-family: var(--sans);
+    font-size: 15px;
+    color: var(--ink-soft);
+    line-height: 1.55;
+    transition: color 180ms ease;
+  }
+  .archive-row:hover .archive-summary,
+  .archive-row:hover .archive-date {
+    color: var(--ink);
+  }
+
+  /* ─────────── Errors ─────────── */
+  .error-line {
+    color: var(--accent);
+    font-style: italic;
+    font-family: var(--sans);
+    font-size: 14px;
+    margin-top: var(--space-2);
+  }
+  .error-line::before {
+    content: "— ";
+  }
+
+  /* ─────────── Utility ─────────── */
+  .hidden { display: none !important; }
+
+  .fade-out {
+    animation: fade-out 350ms ease forwards;
+  }
+  @keyframes fade-out {
+    to { opacity: 0; transform: translateY(-2px); }
+  }
+
+  .fade-in {
+    animation: fade-in 500ms ease both;
+  }
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ─────────── Submitted pitch (read-only after convene) ─────────── */
+  .pitch-submitted {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: clamp(1.25rem, 2.5vw, 1.5rem);
+    line-height: 1.5;
+    color: var(--ink);
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid var(--rule);
+    font-variation-settings: "opsz" 36;
+    margin: 0;
+  }
+
+  /* ─────────── Mobile ─────────── */
+  @media (max-width: 600px) {
+    .page {
+      padding: var(--space-5) 5% var(--space-5);
     }
-    * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      max-width: 720px;
-      margin: 2rem auto;
-      padding: 0 1rem;
-      background: var(--bg);
-      color: var(--fg);
-      line-height: 1.5;
+    .archive-row {
+      grid-template-columns: 1fr;
+      gap: 0.25rem;
+      padding: 1rem 0;
     }
-    h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
-    p.lede { margin: 0 0 1.5rem; color: var(--muted); }
-    textarea {
-      width: 100%;
-      min-height: 6rem;
-      padding: 0.75rem;
-      font-family: inherit;
-      font-size: 1rem;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: var(--card);
-      resize: vertical;
+    .archive-date {
+      font-size: 12px;
     }
-    .controls {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      margin-top: 0.5rem;
+    .round-marker .label {
+      font-size: 10px;
+      letter-spacing: 0.28em;
     }
-    button {
-      padding: 0.55rem 1.1rem;
-      background: var(--accent);
-      color: white;
-      border: none;
-      border-radius: 6px;
-      font-size: 1rem;
-      font-weight: 500;
-      cursor: pointer;
+    .contribution {
+      padding-left: 1.125rem;
     }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .status { color: var(--muted); font-size: 0.9rem; }
-    .status.error { color: var(--error); }
-    #transcript {
-      margin-top: 1.5rem;
-      min-height: 4rem;
+    .member-name {
+      font-size: 1.25rem;
     }
-    #transcript:empty::before {
-      content: "Awaiting your pitch.";
-      color: var(--muted);
-      display: block;
-      padding: 1rem 1.25rem;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 6px;
+    .synthesis-body {
+      font-size: 1.1875rem;
     }
-    .round-header {
-      margin: 1.5rem 0 0.75rem;
-      font-size: 0.85rem;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-    .round-header:first-child { margin-top: 0; }
-    .agent-block {
-      padding: 1rem 1.25rem;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      margin-bottom: 0.75rem;
-    }
-    .agent-name {
-      font-weight: 600;
-      font-size: 0.95rem;
-      margin-bottom: 0.5rem;
-      color: var(--accent);
-    }
-    .agent-content {
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      font-size: 1rem;
-    }
-    .agent-block.speaking .agent-name::after {
-      content: " ▍";
-      color: var(--muted);
-    }
-    #wrap-controls {
-      margin-top: 1.25rem;
-      display: none;
-    }
-    #wrap-controls.visible { display: flex; align-items: center; gap: 0.75rem; }
-    #wrap-btn { background: #111827; }
-    #synthesis {
-      margin-top: 1.25rem;
-      padding: 1rem 1.25rem;
-      background: #fff7ed;
-      border: 1px solid #fed7aa;
-      border-radius: 6px;
-      display: none;
-    }
-    #synthesis.visible { display: block; }
-    #synthesis h2 {
-      margin: 0 0 0.5rem;
-      font-size: 0.85rem;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      color: #9a3412;
-    }
-    #synthesis-body { white-space: pre-wrap; word-wrap: break-word; }
-    #synthesis-summary {
-      margin-top: 0.75rem;
-      padding-top: 0.75rem;
-      border-top: 1px solid #fed7aa;
-      font-style: italic;
-      color: #7c2d12;
-    }
-  </style>
+  }
+</style>
 </head>
 <body>
-  <h1>Local Council</h1>
-  <p class="lede">Drop a pitch. The council responds.</p>
+  <main class="page">
 
-  <textarea id="pitch" placeholder="What's on your mind?"></textarea>
-  <div class="controls">
-    <button id="submit">Convene</button>
-    <span id="status" class="status"></span>
-  </div>
-  <div id="transcript"></div>
+    <header class="masthead">
+      <h1 class="wordmark">The Council</h1>
+      <div class="masthead-sub">
+        A local council of advisors<span class="dot">·</span>Berlin
+      </div>
+    </header>
 
-  <div id="wrap-controls">
-    <button id="wrap-btn">Wrap</button>
-    <span id="wrap-status" class="status"></span>
-  </div>
+    <!-- Pitch input -->
+    <section class="pitch" id="pitch-section">
+      <label class="pitch-label" for="pitch-input">Your pitch</label>
+      <textarea
+        id="pitch-input"
+        class="pitch-textarea"
+        placeholder="What is on your mind?"
+        spellcheck="false"
+      ></textarea>
+      <div class="pitch-actions">
+        <span class="pitch-hint">A decision, a question, anything you're turning over.</span>
+        <button id="convene-btn" class="text-btn">
+          <span>Convene the council</span>
+          <span class="arrow">→</span>
+        </button>
+      </div>
+    </section>
 
-  <div id="synthesis">
-    <h2>Synthesis</h2>
-    <div id="synthesis-body"></div>
-    <div id="synthesis-summary"></div>
-  </div>
+    <!-- Convening state (hidden until submitted) -->
+    <div id="convening" class="convening hidden">
+      <span class="pulse-dot"></span>
+      <span>Convening the council…</span>
+    </div>
 
-  <script>
-    const pitchEl = document.getElementById("pitch");
-    const submitEl = document.getElementById("submit");
-    const statusEl = document.getElementById("status");
-    const transcriptEl = document.getElementById("transcript");
-    const wrapControlsEl = document.getElementById("wrap-controls");
-    const wrapBtnEl = document.getElementById("wrap-btn");
-    const wrapStatusEl = document.getElementById("wrap-status");
-    const synthesisEl = document.getElementById("synthesis");
-    const synthesisBodyEl = document.getElementById("synthesis-body");
-    const synthesisSummaryEl = document.getElementById("synthesis-summary");
+    <!-- Memory line -->
+    <div id="memory-line" class="memory-line hidden">
+      The council remembers <span id="memory-count">2</span> prior <span id="memory-noun">sessions</span>.
+    </div>
 
-    const transcript = [];
-    const tokenBuffers = {};
-    let currentPitch = "";
-    let wrapAbort = null;
+    <!-- Transcript -->
+    <section id="transcript" class="transcript"></section>
 
-    function setStatus(text, isError = false) {
-      statusEl.textContent = text;
-      statusEl.classList.toggle("error", isError);
-    }
+    <!-- Synthesis action -->
+    <div id="synthesis-action" class="synthesis-action hidden">
+      <button id="synthesis-btn" class="text-btn">
+        <span>Hear the council's synthesis</span>
+        <span class="arrow">→</span>
+      </button>
+    </div>
 
-    function parseSSEFrame(frame) {
-      let event = "message";
-      let data = "";
-      for (const raw of frame.split("\n")) {
-        if (!raw || raw.startsWith(":")) continue;
-        if (raw.startsWith("event:")) {
-          event = raw.slice(6).trim();
-        } else if (raw.startsWith("data:")) {
-          data += (data ? "\n" : "") + raw.slice(5).replace(/^ /, "");
-        }
+    <!-- Synthesis output -->
+    <section id="synthesis" class="synthesis hidden"></section>
+
+    <!-- Archive -->
+    <section class="archive">
+      <h2 class="archive-title">The council archive</h2>
+      <ul class="archive-list" id="archive-list"></ul>
+    </section>
+
+  </main>
+
+<script>
+(() => {
+  // ─────────── Member metadata (color, seat label) ───────────
+  // The backend's persona names (display names) are the source of truth for which
+  // members exist. This list only adds visual treatment for the five default seats.
+  // If personas.json grows, unknown members render with a neutral accent.
+  const MEMBERS = [
+    { id: "strategist",  name: "Strategist",  seat: "The Strategist",  cls: "m-strategist"  },
+    { id: "skeptic",     name: "Skeptic",     seat: "The Skeptic",     cls: "m-skeptic"     },
+    { id: "empath",      name: "Empath",      seat: "The Empath",      cls: "m-empath"      },
+    { id: "future-self", name: "Future Self", seat: "Your Future Self", cls: "m-future-self" },
+    { id: "operator",    name: "Operator",    seat: "The Operator",    cls: "m-operator"    },
+  ];
+  const MEMBERS_BY_NAME = Object.fromEntries(MEMBERS.map(m => [m.name, m]));
+
+  function memberFor(name) {
+    if (MEMBERS_BY_NAME[name]) return MEMBERS_BY_NAME[name];
+    const id = name.toLowerCase().replace(/\s+/g, "-");
+    return { id, name, seat: name, cls: "" };
+  }
+
+  // ─────────── Helpers ───────────
+  function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, ch => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    }[ch]));
+  }
+
+  // Tokenize for the synthesis typewriter (non-streaming /wrap)
+  function tokenize(text) {
+    const out = [];
+    const re = /(\s+|\S+)/g;
+    let m;
+    while ((m = re.exec(text)) !== null) out.push(m[1]);
+    const grouped = [];
+    let buf = "";
+    for (const tok of out) {
+      if (/^\s+$/.test(tok)) {
+        if (buf) { grouped.push(buf); buf = ""; }
+        buf = tok;
+      } else {
+        grouped.push(buf + tok);
+        buf = "";
       }
-      return { event, data };
     }
+    if (buf) grouped.push(buf);
+    return grouped;
+  }
 
-    const blocks = {};
-    const rounds = {};
-    let currentBlock = null;
-
-    function resetTranscript() {
-      if (wrapAbort) { wrapAbort.abort(); wrapAbort = null; }
-      transcriptEl.textContent = "";
-      for (const k in blocks) delete blocks[k];
-      for (const k in rounds) delete rounds[k];
-      for (const k in tokenBuffers) delete tokenBuffers[k];
-      currentBlock = null;
-      transcript.length = 0;
-      wrapControlsEl.classList.remove("visible");
-      wrapStatusEl.textContent = "";
-      wrapStatusEl.classList.remove("error");
-      synthesisEl.classList.remove("visible");
-      synthesisBodyEl.textContent = "";
-      synthesisSummaryEl.textContent = "";
-      wrapBtnEl.disabled = false;
+  function parseSSEFrame(frame) {
+    let event = "message";
+    let data = "";
+    for (const raw of frame.split("\n")) {
+      if (!raw || raw.startsWith(":")) continue;
+      if (raw.startsWith("event:")) {
+        event = raw.slice(6).trim();
+      } else if (raw.startsWith("data:")) {
+        data += (data ? "\n" : "") + raw.slice(5).replace(/^ /, "");
+      }
     }
+    return { event, data };
+  }
 
-    function ensureRound(round) {
-      if (rounds[round]) return;
-      const header = document.createElement("div");
-      header.className = "round-header";
-      header.textContent = `Round ${round}`;
-      transcriptEl.appendChild(header);
-      rounds[round] = header;
+  // ─────────── DOM helpers ───────────
+  function makeBody(parent) {
+    const body = document.createElement("div");
+    body.className = "contribution-body";
+    parent.appendChild(body);
+    return body;
+  }
+
+  function appendContribution(member) {
+    const transcript = document.getElementById("transcript");
+    const block = document.createElement("article");
+    block.className = `contribution ${member.cls} fade-in`.trim();
+    if (member.cls) {
+      block.style.setProperty("--member-accent", `var(--${member.id})`);
     }
+    const header = document.createElement("header");
+    header.className = "contribution-header";
+    const name = document.createElement("div");
+    name.className = "member-name";
+    name.textContent = member.name;
+    const seat = document.createElement("span");
+    seat.className = "member-seat";
+    seat.textContent = member.seat;
+    header.appendChild(name);
+    header.appendChild(seat);
+    block.appendChild(header);
+    const body = makeBody(block);
+    transcript.appendChild(block);
+    return body;
+  }
 
-    function ensureBlock(agent, round) {
-      const key = `${agent}|${round}`;
-      if (blocks[key]) return blocks[key];
-      ensureRound(round);
-      const block = document.createElement("div");
-      block.className = "agent-block";
-      const name = document.createElement("div");
-      name.className = "agent-name";
-      name.textContent = agent;
-      const content = document.createElement("div");
-      content.className = "agent-content";
-      block.appendChild(name);
-      block.appendChild(content);
-      transcriptEl.appendChild(block);
-      blocks[key] = { block, content };
-      return blocks[key];
+  function appendRoundMarker(label, isLaterRound = false) {
+    const transcript = document.getElementById("transcript");
+    const wrap = document.createElement("div");
+    wrap.className = "round-marker fade-in" + (isLaterRound ? " round-two" : "");
+    const r1 = document.createElement("span"); r1.className = "rule";
+    const lbl = document.createElement("span"); lbl.className = "label"; lbl.textContent = label;
+    const r2 = document.createElement("span"); r2.className = "rule";
+    wrap.appendChild(r1); wrap.appendChild(lbl); wrap.appendChild(r2);
+    transcript.appendChild(wrap);
+  }
+
+  function ensureCaret(bodyEl) {
+    if (!bodyEl._activeCaret) {
+      const caret = document.createElement("span");
+      caret.className = "caret";
+      bodyEl.appendChild(caret);
+      bodyEl._activeCaret = caret;
     }
+    return bodyEl._activeCaret;
+  }
 
-    async function sendPitch() {
-      const pitch = pitchEl.value.trim();
-      if (!pitch) return;
+  function appendToBody(bodyEl, text) {
+    const caret = ensureCaret(bodyEl);
+    const node = document.createTextNode(text);
+    bodyEl.insertBefore(node, caret);
+  }
 
-      submitEl.disabled = true;
-      resetTranscript();
-      currentPitch = pitch;
-      setStatus("Connecting to council...");
+  function clearCaret(bodyEl) {
+    if (bodyEl._activeCaret) {
+      bodyEl._activeCaret.remove();
+      bodyEl._activeCaret = null;
+    }
+  }
 
+  function showError(message) {
+    const t = document.getElementById("transcript");
+    const e = document.createElement("div");
+    e.className = "error-line fade-in";
+    e.textContent = message;
+    t.appendChild(e);
+  }
+
+  async function fadeOutConvening() {
+    const convening = document.getElementById("convening");
+    convening.classList.add("fade-out");
+    await delay(360);
+    convening.classList.add("hidden");
+    convening.classList.remove("fade-in", "fade-out");
+  }
+
+  function hideConveningImmediate() {
+    const convening = document.getElementById("convening");
+    convening.classList.add("hidden");
+    convening.classList.remove("fade-in", "fade-out");
+  }
+
+  function roundLabel(round) {
+    return ({ 1: "Round One", 2: "Round Two", 3: "Round Three" })[round] || `Round ${round}`;
+  }
+
+  // ─────────── Session state ───────────
+  const state = {
+    pitch: "",
+    transcript: [],
+    tokenBuffers: {},
+    wrapAbort: null,
+  };
+
+  // ─────────── /pitch flow ───────────
+  // Returns true if streaming started successfully, false if we never got off
+  // the ground (so the caller can re-enable the convene button for a retry).
+  async function runDiscussion(pitchText) {
+    state.pitch = pitchText;
+    state.transcript = [];
+    state.tokenBuffers = {};
+
+    // Show convening overlay while we wait for /pitch to respond. The pitch
+    // input stays visible underneath — only fades once the stream is open.
+    const convening = document.getElementById("convening");
+    convening.classList.remove("hidden");
+    convening.classList.add("fade-in");
+
+    let resp;
+    try {
+      resp = await fetch("/pitch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pitch: pitchText }),
+      });
+    } catch (err) {
+      hideConveningImmediate();
+      showError("The council could not be reached. Is the server running?");
+      console.error(err);
+      return false;
+    }
+    if (!resp.ok) {
+      hideConveningImmediate();
+      let msg = `HTTP ${resp.status}`;
       try {
-        const resp = await fetch("/pitch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pitch }),
-        });
-
-        if (!resp.ok) {
-          setStatus(`HTTP ${resp.status}`, true);
-          return;
+        const errBody = await resp.json();
+        if (errBody && errBody.detail) {
+          msg = typeof errBody.detail === "string"
+            ? errBody.detail
+            : JSON.stringify(errBody.detail);
         }
+      } catch {}
+      showError(msg);
+      return false;
+    }
 
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        setStatus("Streaming...");
+    // Stream is open — commit to the ceremony and fade the pitch input out.
+    const pitchSection = document.getElementById("pitch-section");
+    pitchSection.classList.add("fade-out");
+    await delay(320);
+    pitchSection.innerHTML = `
+      <span class="pitch-label">The pitch</span>
+      <p class="pitch-submitted">${escapeHtml(pitchText)}</p>
+    `;
+    pitchSection.classList.remove("fade-out");
+    pitchSection.classList.add("fade-in");
 
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let conveningHidden = false;
+    let currentBody = null;
+    let currentRound = null;
 
-          let sepIdx;
-          while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
-            const frame = buffer.slice(0, sepIdx);
-            buffer = buffer.slice(sepIdx + 2);
-            if (!frame.trim()) continue;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
 
-            const { event, data } = parseSSEFrame(frame);
-            if (!data) continue;
+      let sepIdx;
+      while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, sepIdx);
+        buffer = buffer.slice(sepIdx + 2);
+        if (!frame.trim()) continue;
+        const { event, data } = parseSSEFrame(frame);
+        if (!data) continue;
+        let payload;
+        try { payload = JSON.parse(data); } catch { continue; }
 
-            let payload;
-            try { payload = JSON.parse(data); }
-            catch { continue; }
-
-            if (event === "agent_speaking") {
-              const b = ensureBlock(payload.agent, payload.round);
-              b.block.classList.add("speaking");
-              currentBlock = b;
-              tokenBuffers[`${payload.agent}|${payload.round}`] = "";
-              setStatus(`${payload.agent} speaking (round ${payload.round})...`);
-            } else if (event === "token") {
-              if (currentBlock) currentBlock.content.textContent += payload.token;
-              const key = `${payload.agent}|${payload.round}`;
-              tokenBuffers[key] = (tokenBuffers[key] || "") + payload.token;
-            } else if (event === "agent_done") {
-              const key = `${payload.agent}|${payload.round}`;
-              if (blocks[key]) blocks[key].block.classList.remove("speaking");
-              transcript.push({
-                agent: payload.agent,
-                round: payload.round,
-                content: tokenBuffers[key] || "",
-              });
-            } else if (event === "discussion_complete") {
-              setStatus("Done.");
-              wrapControlsEl.classList.add("visible");
-            } else if (event === "error") {
-              setStatus(`Error: ${payload.message}`, true);
-            }
+        if (event === "memory_loaded") {
+          // Phase 5 forward-compat: shows only when backend reports prior sessions.
+          const ids = Array.isArray(payload.session_ids) ? payload.session_ids : [];
+          if (ids.length > 0) {
+            const memory = document.getElementById("memory-line");
+            const count = document.getElementById("memory-count");
+            const noun = document.getElementById("memory-noun");
+            if (count) count.textContent = String(ids.length);
+            if (noun) noun.textContent = ids.length === 1 ? "session" : "sessions";
+            memory.classList.remove("hidden");
+            memory.classList.add("fade-in");
           }
+        } else if (event === "agent_speaking") {
+          if (!conveningHidden) {
+            await fadeOutConvening();
+            conveningHidden = true;
+          }
+          if (payload.round !== currentRound) {
+            appendRoundMarker(roundLabel(payload.round), payload.round > 1);
+            currentRound = payload.round;
+            await delay(220);
+          }
+          currentBody = appendContribution(memberFor(payload.agent));
+          state.tokenBuffers[`${payload.agent}|${payload.round}`] = "";
+          await delay(180);
+        } else if (event === "token") {
+          if (currentBody) {
+            appendToBody(currentBody, payload.token);
+            const key = `${payload.agent}|${payload.round}`;
+            state.tokenBuffers[key] = (state.tokenBuffers[key] || "") + payload.token;
+          }
+        } else if (event === "agent_done") {
+          if (currentBody) {
+            clearCaret(currentBody);
+            currentBody = null;
+          }
+          const key = `${payload.agent}|${payload.round}`;
+          state.transcript.push({
+            agent: payload.agent,
+            round: payload.round,
+            content: state.tokenBuffers[key] || "",
+          });
+          await delay(380);
+        } else if (event === "discussion_complete") {
+          await delay(220);
+          const action = document.getElementById("synthesis-action");
+          action.classList.remove("hidden");
+          action.classList.add("fade-in");
+        } else if (event === "error") {
+          if (!conveningHidden) { hideConveningImmediate(); conveningHidden = true; }
+          showError(payload.message || "The council errored.");
         }
-      } catch (e) {
-        setStatus(`Connection error: ${e.message}`, true);
-      } finally {
-        submitEl.disabled = false;
       }
     }
+    return true;
+  }
 
-    async function wrapDiscussion() {
-      if (!transcript.length) return;
-      if (wrapAbort) wrapAbort.abort();
-      wrapAbort = new AbortController();
-      const myAbort = wrapAbort;
+  // ─────────── /wrap flow ───────────
+  async function runSynthesis() {
+    if (!state.transcript.length) return;
 
-      wrapBtnEl.disabled = true;
-      wrapStatusEl.textContent = "Synthesizing...";
-      wrapStatusEl.classList.remove("error");
+    if (state.wrapAbort) state.wrapAbort.abort();
+    state.wrapAbort = new AbortController();
+    const myAbort = state.wrapAbort;
+
+    const action = document.getElementById("synthesis-action");
+    action.innerHTML = `
+      <div class="convening">
+        <span class="pulse-dot"></span>
+        <span>Synthesizing…</span>
+      </div>
+    `;
+
+    let data;
+    try {
+      const resp = await fetch("/wrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pitch: state.pitch, transcript: state.transcript }),
+        signal: myAbort.signal,
+      });
+      if (!resp.ok) {
+        let msg = `HTTP ${resp.status}`;
+        try {
+          const errBody = await resp.json();
+          if (errBody && errBody.detail) {
+            msg = typeof errBody.detail === "string"
+              ? errBody.detail
+              : JSON.stringify(errBody.detail);
+          }
+        } catch {}
+        action.innerHTML = `<div class="error-line">${escapeHtml(msg)}</div>`;
+        return;
+      }
+      data = await resp.json();
+    } catch (e) {
+      if (e.name === "AbortError") return;
+      action.innerHTML = `<div class="error-line">${escapeHtml(e.message || "Synthesis failed.")}</div>`;
+      return;
+    } finally {
+      if (state.wrapAbort === myAbort) state.wrapAbort = null;
+    }
+
+    const synth = document.getElementById("synthesis");
+    synth.classList.remove("hidden");
+    synth.classList.add("fade-in");
+
+    const p = document.createElement("p");
+    p.className = "synthesis-body";
+    synth.appendChild(p);
+
+    const caret = document.createElement("span");
+    caret.className = "caret";
+    caret.style.setProperty("--member-accent", "var(--accent)");
+    p.appendChild(caret);
+
+    const tokens = tokenize(data.synthesis || "");
+    for (const tok of tokens) {
+      const t = document.createTextNode(tok);
+      p.insertBefore(t, caret);
+      await delay(18 + Math.random() * 22);
+    }
+    caret.remove();
+
+    if (data.summary) {
+      await delay(450);
+      const take = document.createElement("div");
+      take.className = "synthesis-takeaway fade-in";
+      take.innerHTML = `<span class="synthesis-takeaway-label">Takeaway</span>${escapeHtml(data.summary)}`;
+      synth.appendChild(take);
+    }
+
+    action.classList.add("fade-out");
+    await delay(360);
+    action.classList.add("hidden");
+  }
+
+  // ─────────── Init ───────────
+  document.addEventListener("DOMContentLoaded", () => {
+    const input = document.getElementById("pitch-input");
+    const conveneBtn = document.getElementById("convene-btn");
+    const synthBtn = document.getElementById("synthesis-btn");
+
+    // Hide archive section until /sessions endpoint exists (Phase 5)
+    const archive = document.querySelector(".archive");
+    if (archive) archive.classList.add("hidden");
+
+    let running = false;
+    conveneBtn.addEventListener("click", async () => {
+      if (running) return;
+      const text = (input.value || "").trim();
+      if (!text) { input.focus(); return; }
+      running = true;
+      conveneBtn.disabled = true;
+      let started = false;
       try {
-        const resp = await fetch("/wrap", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pitch: currentPitch, transcript }),
-          signal: myAbort.signal,
-        });
-        if (!resp.ok) {
-          let msg = `HTTP ${resp.status}`;
-          try {
-            const err = await resp.json();
-            if (err && err.detail) msg = err.detail;
-          } catch { /* response body not JSON */ }
-          wrapStatusEl.textContent = msg;
-          wrapStatusEl.classList.add("error");
-          return;
-        }
-        const data = await resp.json();
-        synthesisBodyEl.textContent = data.synthesis || "";
-        synthesisSummaryEl.textContent = data.summary ? `Summary: ${data.summary}` : "";
-        synthesisEl.classList.add("visible");
-        wrapStatusEl.textContent = "";
-      } catch (e) {
-        if (e.name === "AbortError") return;
-        wrapStatusEl.textContent = `Error: ${e.message}`;
-        wrapStatusEl.classList.add("error");
-      } finally {
-        if (wrapAbort === myAbort) wrapAbort = null;
-        wrapBtnEl.disabled = false;
+        started = await runDiscussion(text);
+      } catch (err) {
+        showError("The council could not be reached.");
+        console.error(err);
       }
-    }
-
-    submitEl.addEventListener("click", sendPitch);
-    wrapBtnEl.addEventListener("click", wrapDiscussion);
-    pitchEl.addEventListener("keydown", (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") sendPitch();
+      // If we never got a stream open, restore the convene button so the
+      // user can fix the issue and try again without losing their typed pitch.
+      if (!started) {
+        running = false;
+        conveneBtn.disabled = false;
+      }
     });
-  </script>
+
+    synthBtn.addEventListener("click", () => {
+      runSynthesis().catch(err => { console.error(err); });
+    });
+
+    input.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") conveneBtn.click();
+    });
+  });
+})();
+</script>
 </body>
 </html>
