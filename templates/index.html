@@ -384,16 +384,39 @@
     color: var(--ink-faint);
     letter-spacing: 0.01em;
   }
-  .archive-summary {
+  .archive-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 0;            /* let the clamped pitch ellipsize inside the grid */
+  }
+  .archive-pitch {
     font-family: var(--sans);
     font-size: 15px;
     color: var(--ink-soft);
-    line-height: 1.55;
+    line-height: 1.5;
     transition: color 180ms ease;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;   /* show the question, capped at two lines */
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
-  .archive-row:hover .archive-summary,
+  .archive-summary {
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--ink-faint);
+    line-height: 1.5;
+  }
+  .archive-row:hover .archive-pitch,
   .archive-row:hover .archive-date {
     color: var(--ink);
+  }
+  .archive-empty {
+    font-family: var(--sans);
+    font-size: 15px;
+    color: var(--ink-faint);
+    font-style: italic;
+    padding: 0.75rem 0;
   }
 
   /* ─────────── Errors ─────────── */
@@ -504,7 +527,7 @@
 
     <!-- Memory line -->
     <div id="memory-line" class="memory-line hidden">
-      The council remembers <span id="memory-count">2</span> prior <span id="memory-noun">sessions</span>.
+      The council remembers <span id="memory-count"></span> prior <span id="memory-noun">sessions</span>.
     </div>
 
     <!-- Transcript -->
@@ -903,6 +926,128 @@
     action.classList.add("fade-out");
     await delay(360);
     action.classList.add("hidden");
+
+    // The session is now persisted (/wrap wrote it) — refresh the archive so it
+    // shows up without a page reload.
+    loadArchive();
+  }
+
+  // ─────────── Archive (persisted sessions) ───────────
+  async function loadArchive() {
+    const list = document.getElementById("archive-list");
+    let sessions;
+    try {
+      const resp = await fetch("/sessions");
+      if (!resp.ok) return;
+      sessions = await resp.json();
+    } catch (err) {
+      console.error(err);
+      return;
+    }
+
+    list.innerHTML = "";
+    if (!sessions.length) {
+      const empty = document.createElement("li");
+      empty.className = "archive-empty";
+      empty.textContent = "Nothing yet — convene a council and hear its synthesis.";
+      list.appendChild(empty);
+      return;
+    }
+
+    for (const s of sessions) {
+      const row = document.createElement("li");
+      row.className = "archive-row";
+
+      const date = document.createElement("span");
+      date.className = "archive-date";
+      // created_at is a UTC "YYYY-MM-DD HH:MM:SS" string; the date portion is
+      // all we show, so slice it rather than risk timezone parsing surprises.
+      date.textContent = (s.created_at || "").slice(0, 10);
+
+      // The original pitch is the primary line so the entry is recognizable;
+      // the council's one-line takeaway sits beneath it.
+      const content = document.createElement("div");
+      content.className = "archive-content";
+      const pitch = document.createElement("span");
+      pitch.className = "archive-pitch";
+      pitch.textContent = s.pitch;
+      content.appendChild(pitch);
+      if (s.summary) {
+        const summary = document.createElement("span");
+        summary.className = "archive-summary";
+        summary.textContent = s.summary;
+        content.appendChild(summary);
+      }
+
+      row.appendChild(date);
+      row.appendChild(content);
+      row.addEventListener("click", () => openSession(s.id));
+      list.appendChild(row);
+    }
+  }
+
+  async function openSession(id) {
+    let session;
+    try {
+      const resp = await fetch(`/sessions/${id}`);
+      if (!resp.ok) return;
+      session = await resp.json();
+    } catch (err) {
+      console.error(err);
+      return;
+    }
+    renderSession(session);
+  }
+
+  // Replay a stored session read-only, reusing the live render helpers but
+  // without the streaming ceremony (no carets, no per-token delays).
+  function renderSession(session) {
+    hideConveningImmediate();
+    document.getElementById("memory-line").classList.add("hidden");
+    document.getElementById("synthesis-action").classList.add("hidden");
+
+    const pitchSection = document.getElementById("pitch-section");
+    pitchSection.innerHTML = `
+      <span class="pitch-label">The pitch</span>
+      <p class="pitch-submitted"></p>
+    `;
+    pitchSection.querySelector(".pitch-submitted").textContent = session.pitch;
+
+    const transcript = document.getElementById("transcript");
+    transcript.innerHTML = "";
+    let currentRound = null;
+    for (const entry of session.transcript || []) {
+      if (entry.round !== currentRound) {
+        appendRoundMarker(roundLabel(entry.round), entry.round > 1);
+        currentRound = entry.round;
+      }
+      const body = appendContribution(memberFor(entry.agent));
+      body.textContent = entry.content;
+    }
+
+    const synth = document.getElementById("synthesis");
+    synth.innerHTML = "";
+    if (session.synthesis) {
+      synth.classList.remove("hidden");
+      const p = document.createElement("p");
+      p.className = "synthesis-body";
+      p.textContent = session.synthesis;
+      synth.appendChild(p);
+      if (session.summary) {
+        const take = document.createElement("div");
+        take.className = "synthesis-takeaway";
+        const label = document.createElement("span");
+        label.className = "synthesis-takeaway-label";
+        label.textContent = "Takeaway";
+        take.appendChild(label);
+        take.appendChild(document.createTextNode(session.summary));
+        synth.appendChild(take);
+      }
+    } else {
+      synth.classList.add("hidden");
+    }
+
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   // ─────────── Init ───────────
@@ -911,9 +1056,8 @@
     const conveneBtn = document.getElementById("convene-btn");
     const synthBtn = document.getElementById("synthesis-btn");
 
-    // Hide archive section until /sessions endpoint exists (Phase 5)
-    const archive = document.querySelector(".archive");
-    if (archive) archive.classList.add("hidden");
+    // Load the persisted-session archive on first paint.
+    loadArchive();
 
     let running = false;
     conveneBtn.addEventListener("click", async () => {

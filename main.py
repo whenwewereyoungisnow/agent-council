@@ -1,6 +1,7 @@
 import json
 import os
 import secrets
+import sqlite3
 from pathlib import Path
 
 import httpx
@@ -70,6 +71,43 @@ def _load_personas() -> list[dict]:
 
 
 PERSONAS: list[dict] = _load_personas()
+
+
+# ─────────── SQLite persistence ───────────
+# Path is env-overridable so Railway can point it at a mounted Volume; the
+# default writes council.db next to main.py for local dev. The container
+# filesystem is ephemeral, so without a Volume the db is wiped on each deploy.
+DB_PATH = os.environ.get("COUNCIL_DB_PATH", str(ROOT / "council.db"))
+
+
+def _init_db() -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+              id              INTEGER PRIMARY KEY AUTOINCREMENT,
+              pitch           TEXT NOT NULL,
+              transcript_json TEXT NOT NULL,
+              synthesis       TEXT,
+              summary         TEXT,
+              created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_created
+              ON sessions (created_at DESC);
+            """
+        )
+    # Log the resolved path once so "archive empty after deploy" is diagnosable.
+    print(f"[council] SQLite DB at {os.path.abspath(DB_PATH)}")
+
+
+def _db() -> sqlite3.Connection:
+    """A fresh per-request connection. Single-user scale — no pool needed."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+_init_db()
 
 app = FastAPI(dependencies=[Depends(require_auth)])
 
@@ -286,4 +324,43 @@ async def wrap(body: WrapBody) -> dict:
     except httpx.HTTPStatusError as e:
         raise HTTPException(502, f"Anthropic returned HTTP {e.response.status_code}")
 
-    return parse_synthesis(raw)
+    result = parse_synthesis(raw)
+
+    # Persist the session. Store the transcript in the exact {agent, round,
+    # content} shape the frontend produces, so replay round-trips cleanly.
+    transcript_json = json.dumps([e.model_dump() for e in body.transcript])
+    with _db() as conn:
+        cur = conn.execute(
+            "INSERT INTO sessions (pitch, transcript_json, synthesis, summary) "
+            "VALUES (?, ?, ?, ?)",
+            (body.pitch, transcript_json, result["synthesis"], result["summary"]),
+        )
+        session_id = cur.lastrowid
+
+    return {**result, "session_id": session_id}
+
+
+@app.get("/sessions")
+async def list_sessions() -> list[dict]:
+    """Archive index, newest first. id DESC breaks ties within the same second."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT id, pitch, summary, created_at FROM sessions "
+            "ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/sessions/{session_id}")
+async def get_session(session_id: int) -> dict:
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT id, pitch, transcript_json, synthesis, summary, created_at "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Session not found")
+    data = dict(row)
+    data["transcript"] = json.loads(data.pop("transcript_json"))
+    return data
