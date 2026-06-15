@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+import re
 import secrets
 import sqlite3
 from pathlib import Path
@@ -25,6 +27,7 @@ if not ANTHROPIC_API_KEY:
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS_AGENT = 1024
 MAX_TOKENS_WRAP = 1024
+MAX_TOKENS_RECALL = 256  # relevance check returns only a short JSON array of ids
 
 # ─────────── Auth (HTTP Basic, gated by env vars) ───────────
 COUNCIL_USER = os.environ.get("COUNCIL_USER")
@@ -221,12 +224,14 @@ ROUND2_SYSTEM_SUFFIX = (
 
 
 def build_prompt(
-    persona: dict, pitch: str, prior: list[dict], round_num: int
+    persona: dict, pitch: str, prior: list[dict], round_num: int, dossier: str = ""
 ) -> tuple[str, str]:
     """Returns (system, user) for the Anthropic API."""
     system = persona["system"]
     if round_num == 2:
         system += ROUND2_SYSTEM_SUFFIX
+    if dossier:
+        system += "\n\n" + dossier
 
     parts = [f"PITCH:\n{pitch}"]
     if prior:
@@ -241,6 +246,106 @@ def build_prompt(
     return system, "\n\n".join(parts)
 
 
+# ─────────── Memory recall (Phase 5) ───────────
+MAX_RECALL_CANDIDATES = 50  # cap on how many past summaries we weigh per pitch
+
+
+def _oneline(text: str) -> str:
+    """Collapse a summary to one line so the dossier/listing formatting holds."""
+    return " ".join(text.split())
+
+
+def _recent_summaries() -> list[dict]:
+    """Most-recent sessions that carry a usable summary, for relevance ranking."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT id, created_at, summary FROM sessions "
+            "WHERE summary IS NOT NULL AND TRIM(summary) != '' "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (MAX_RECALL_CANDIDATES,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def parse_id_list(raw: str, valid_ids: set[int]) -> list[int]:
+    """Extract a JSON array of ints from model output; [] on any failure.
+
+    Scans each flat ``[...]`` span and uses the first that parses as a JSON
+    list, so a stray bracket elsewhere in the model's prose can't swallow the
+    real answer. Keeps only ids that exist, preserving order and dropping
+    duplicates. Booleans are excluded (bool is an int subclass).
+    """
+    for match in re.finditer(r"\[[^\[\]]*\]", raw):
+        try:
+            arr = json.loads(match.group())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(arr, list):
+            continue
+        out: list[int] = []
+        for x in arr:
+            if isinstance(x, bool) or not isinstance(x, int):
+                continue
+            if x in valid_ids and x not in out:
+                out.append(x)
+        return out
+    return []
+
+
+async def recall_relevant_sessions(
+    client: httpx.AsyncClient, pitch: str
+) -> tuple[list[int], str]:
+    """Pick prior sessions relevant to this pitch. Returns (ids, dossier).
+
+    Best-effort: any failure yields ([], "") so the pitch flow never breaks.
+    """
+    try:
+        candidates = _recent_summaries()
+        if not candidates:
+            return [], ""
+
+        by_id = {c["id"]: c for c in candidates}
+        listing = "\n".join(
+            f"[{c['id']}, {(c['created_at'] or '')[:10]}]: {_oneline(c['summary'])}"
+            for c in candidates
+        )
+        system = (
+            "You are the council's memory. Given a new pitch and a list of past "
+            "council sessions (each with an id, date, and one-line summary), decide "
+            "which past sessions are genuinely relevant to the new pitch — a similar "
+            "topic, decision, tension, or theme. Be selective: relevance must be "
+            "real, not superficial word overlap."
+        )
+        user = (
+            f"NEW PITCH:\n{pitch}\n\n"
+            f"PAST SESSIONS:\n{listing}\n\n"
+            "Return ONLY a JSON array of the integer ids of the relevant past "
+            "sessions, most relevant first, e.g. [12, 9]. If none are relevant, "
+            "return []. No other text."
+        )
+        # Cap recall on the critical path so a slow API call can't freeze the
+        # discussion behind the "Convening" overlay; we degrade to no memory.
+        async with asyncio.timeout(20.0):
+            raw = await claude_chat(client, system, user, MAX_TOKENS_RECALL)
+        ids = parse_id_list(raw, set(by_id))
+        if not ids:
+            return [], ""
+
+        dossier_lines = "\n".join(
+            f"- [Session {i}, {(by_id[i]['created_at'] or '')[:10]}]: "
+            f"{_oneline(by_id[i]['summary'])}"
+            for i in ids
+        )
+        dossier = (
+            "Past relevant council sessions you should remember:\n" + dossier_lines
+        )
+        return ids, dossier
+    except Exception as e:
+        # Recall is a nice-to-have; degrade to no memory rather than break /pitch.
+        print(f"[council] recall failed, continuing without memory: {e}")
+        return [], ""
+
+
 # ─────────── Routes ───────────
 @app.get("/")
 async def index() -> FileResponse:
@@ -253,6 +358,14 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
         transcript: list[dict] = []
         try:
             async with httpx.AsyncClient(timeout=None) as client:
+                session_ids, dossier = await recall_relevant_sessions(
+                    client, body.pitch
+                )
+                yield {
+                    "event": "memory_loaded",
+                    "data": json.dumps({"session_ids": session_ids}),
+                }
+
                 for round_num in (1, 2):
                     for persona in PERSONAS:
                         name = persona["name"]
@@ -262,7 +375,7 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
                         }
 
                         system, user = build_prompt(
-                            persona, body.pitch, transcript, round_num
+                            persona, body.pitch, transcript, round_num, dossier
                         )
                         chunks: list[str] = []
                         async for text in stream_claude_text(client, system, user):
