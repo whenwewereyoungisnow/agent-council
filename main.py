@@ -13,7 +13,11 @@ from sse_starlette.sse import EventSourceResponse
 
 # ─────────── Ollama config ───────────
 OLLAMA_URL = "http://localhost:11434"
-MODEL = "qwen3.6:latest"
+# qwen3.6 MoE (~3B active of 35B): fast token streaming for the live ceremony,
+# and `think: false` (below) applies cleanly to this thinking-capable model.
+# To try gemma4:31b-nvfp4 instead, note it is NOT a thinking model — verify
+# Ollama accepts `think` for it (or drop the field) before switching.
+MODEL = "qwen3.6:35b-a3b-nvfp4"
 # num_ctx sized for 5-persona x 2-round discussions where round 2 carries the
 # full round 1 transcript; recall and synthesis reuse the same window. `think`
 # is a TOP-LEVEL field, never inside `options` — misplaced it is silently
