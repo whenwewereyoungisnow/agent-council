@@ -1,4 +1,8 @@
+import asyncio
 import json
+import re
+import sqlite3
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import httpx
@@ -7,9 +11,16 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
+# ─────────── Ollama config ───────────
 OLLAMA_URL = "http://localhost:11434"
 MODEL = "qwen3.6:latest"
+# num_ctx sized for 5-persona x 2-round discussions where round 2 carries the
+# full round 1 transcript; recall and synthesis reuse the same window. `think`
+# is a TOP-LEVEL field, never inside `options` — misplaced it is silently
+# ignored and the model reasons invisibly for minutes (see docs/ollama.md).
+NUM_CTX = 16384
 
+# ─────────── Personas ───────────
 ROOT = Path(__file__).parent
 
 
@@ -32,9 +43,45 @@ def _load_personas() -> list[dict]:
 
 PERSONAS: list[dict] = _load_personas()
 
+
+# ─────────── SQLite persistence ───────────
+# Laptop-only: the db lives next to main.py. No volume/ephemeral-FS concerns
+# here — that's the deployed (main) branch's problem, not this one's.
+DB_PATH = str(ROOT / "council.db")
+
+
+def _init_db() -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+              id              INTEGER PRIMARY KEY AUTOINCREMENT,
+              pitch           TEXT NOT NULL,
+              transcript_json TEXT NOT NULL,
+              synthesis       TEXT,
+              summary         TEXT,
+              created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_created
+              ON sessions (created_at DESC);
+            """
+        )
+    print(f"[council] SQLite DB at {DB_PATH}")
+
+
+def _db() -> sqlite3.Connection:
+    """A fresh per-request connection. Single-user scale — no pool needed."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+_init_db()
+
 app = FastAPI()
 
 
+# ─────────── Models ───────────
 class PitchBody(BaseModel):
     pitch: str = Field(..., min_length=1)
 
@@ -50,6 +97,7 @@ class WrapBody(BaseModel):
     transcript: list[TranscriptEntry] = Field(..., min_length=1)
 
 
+# ─────────── Formatting ───────────
 def fmt_turn(agent: str, round_num: int, content: str) -> str:
     return f"[{agent}, round {round_num}]: {content}"
 
@@ -58,8 +106,21 @@ def format_transcript_for_wrap(transcript: list[TranscriptEntry]) -> str:
     return "\n\n".join(fmt_turn(e.agent, e.round, e.content) for e in transcript)
 
 
+def _first_sentence(text: str, limit: int = 200) -> str:
+    """A one-line summary fallback: the first sentence of ``text``, capped."""
+    flat = " ".join(text.split())
+    match = re.search(r".+?[.!?](?:\s|$)", flat)
+    candidate = match.group().strip() if match else flat
+    return candidate[:limit].rstrip()
+
+
 def parse_synthesis(raw: str) -> dict:
-    """Parse the model's JSON output. Falls back to plain text if malformed."""
+    """Parse the model's JSON output. Falls back to plain text if malformed.
+
+    A blank summary makes the session invisible to memory recall (which filters
+    out empty summaries), so whenever the summary is missing — a truncated or
+    non-JSON response — derive a one-line summary from the synthesis text.
+    """
     candidates = [raw.strip()]
     start, end = raw.find("{"), raw.rfind("}")
     if start != -1 and end > start:
@@ -71,24 +132,105 @@ def parse_synthesis(raw: str) -> dict:
         except json.JSONDecodeError:
             continue
         if isinstance(obj, dict) and "synthesis" in obj and "summary" in obj:
-            return {"synthesis": str(obj["synthesis"]), "summary": str(obj["summary"])}
+            synthesis = str(obj["synthesis"])
+            summary = str(obj["summary"]).strip()
+            return {
+                "synthesis": synthesis,
+                "summary": summary or _first_sentence(synthesis),
+            }
 
-    return {"synthesis": raw.strip(), "summary": ""}
-
-
-@app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(ROOT / "templates" / "index.html")
-
-
-@app.get("/health/ollama")
-async def health_ollama() -> dict:
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(f"{OLLAMA_URL}/api/version")
-        resp.raise_for_status()
-        return resp.json()
+    text = raw.strip()
+    return {"synthesis": text, "summary": _first_sentence(text)}
 
 
+# ─────────── Ollama client ───────────
+class AgentStreamError(Exception):
+    """A streamed agent turn failed. The message is safe to show the user."""
+
+
+def _ollama_payload(messages: list[dict], *, stream: bool) -> dict:
+    return {
+        "model": MODEL,
+        "stream": stream,
+        "think": False,  # top-level, NOT inside options (silent footgun otherwise)
+        "options": {"num_ctx": NUM_CTX},
+        "messages": messages,
+    }
+
+
+def _ollama_error_message(body: object, status: int | None = None) -> str:
+    """Human reason from an Ollama error body: {"error": "..."}."""
+    err = body.get("error") if isinstance(body, dict) else None
+    detail = str(err) if err else "unknown error"
+    if status is not None:
+        return f"Ollama error (HTTP {status}): {detail}"
+    return f"Ollama error: {detail}"
+
+
+def _stream_error_text(exc: Exception) -> str:
+    """A user-facing reason for a failed agent turn."""
+    if isinstance(exc, AgentStreamError):
+        return str(exc)
+    if isinstance(exc, httpx.ConnectError):
+        return "Cannot reach Ollama at localhost:11434. Is it running?"
+    if isinstance(exc, httpx.TimeoutException):
+        return "The model stopped responding (timeout)."
+    if isinstance(exc, httpx.HTTPError):
+        return "Lost the connection to Ollama."
+    return f"Unexpected error: {exc}"
+
+
+async def stream_ollama_text(
+    client: httpx.AsyncClient, messages: list[dict]
+) -> AsyncIterator[str]:
+    """Yield text chunks from a streaming /api/chat call.
+
+    Raises AgentStreamError on a non-200 response, on an error chunk, or if the
+    stream ends without a `done` terminal chunk — rather than silently ending
+    the stream or committing a truncated turn as if it were complete.
+    """
+    payload = _ollama_payload(messages, stream=True)
+    async with client.stream(
+        "POST", f"{OLLAMA_URL}/api/chat", json=payload
+    ) as resp:
+        if resp.status_code != 200:
+            # A streamed response leaves the body unread; pull it explicitly so
+            # the error carries Ollama's message, not just a bare status.
+            raw = await resp.aread()
+            try:
+                body = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                body = None
+            raise AgentStreamError(_ollama_error_message(body, resp.status_code))
+        async for line in resp.aiter_lines():
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if chunk.get("error"):
+                raise AgentStreamError(_ollama_error_message(chunk))
+            token = chunk.get("message", {}).get("content", "")
+            if token:
+                yield token
+            if chunk.get("done"):
+                return
+        # The stream ended without a `done` terminal chunk — Ollama died or was
+        # killed mid-generation. The text so far is partial, so surface a cut-off
+        # error instead of recording a truncated turn as the agent's full reply.
+        raise AgentStreamError("The model's response was cut off.")
+
+
+async def ollama_chat(client: httpx.AsyncClient, messages: list[dict]) -> str:
+    """Non-streaming /api/chat call. Returns the message content."""
+    payload = _ollama_payload(messages, stream=False)
+    resp = await client.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=180.0)
+    resp.raise_for_status()
+    return resp.json().get("message", {}).get("content", "")
+
+
+# ─────────── Prompt construction ───────────
 ROUND2_SYSTEM_SUFFIX = (
     "\n\nYou have heard the others speak. "
     "Engage with specific points they made. "
@@ -97,11 +239,14 @@ ROUND2_SYSTEM_SUFFIX = (
 
 
 def build_messages(
-    persona: dict, pitch: str, prior: list[dict], round_num: int
+    persona: dict, pitch: str, prior: list[dict], round_num: int, dossier: str = ""
 ) -> list[dict]:
+    """Returns the Ollama /api/chat messages array (system + user)."""
     system = persona["system"]
     if round_num == 2:
         system += ROUND2_SYSTEM_SUFFIX
+    if dossier:
+        system += "\n\n" + dossier
 
     parts = [f"PITCH:\n{pitch}"]
     if prior:
@@ -119,12 +264,147 @@ def build_messages(
     ]
 
 
+# ─────────── Memory recall ───────────
+MAX_RECALL_CANDIDATES = 50  # cap on how many past summaries we weigh per pitch
+
+
+def _oneline(text: str) -> str:
+    """Collapse a summary to one line so the dossier/listing formatting holds."""
+    return " ".join(text.split())
+
+
+def _recent_summaries() -> list[dict]:
+    """Most-recent sessions that carry a usable summary, for relevance ranking."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT id, created_at, summary FROM sessions "
+            "WHERE summary IS NOT NULL AND TRIM(summary) != '' "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (MAX_RECALL_CANDIDATES,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def parse_id_list(raw: str, valid_ids: set[int]) -> list[int]:
+    """Extract a JSON array of ints from model output; [] on any failure.
+
+    Scans each flat ``[...]`` span and uses the first that parses as a JSON
+    list, so a stray bracket elsewhere in the model's prose can't swallow the
+    real answer. Keeps only ids that exist, preserving order and dropping
+    duplicates. Booleans are excluded (bool is an int subclass).
+    """
+    for match in re.finditer(r"\[[^\[\]]*\]", raw):
+        try:
+            arr = json.loads(match.group())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(arr, list):
+            continue
+        out: list[int] = []
+        for x in arr:
+            if isinstance(x, bool) or not isinstance(x, int):
+                continue
+            if x in valid_ids and x not in out:
+                out.append(x)
+        return out
+    return []
+
+
+async def recall_relevant_sessions(
+    client: httpx.AsyncClient, pitch: str
+) -> tuple[list[int], str]:
+    """Pick prior sessions relevant to this pitch. Returns (ids, dossier).
+
+    Best-effort: any failure yields ([], "") so the pitch flow never breaks.
+    """
+    try:
+        candidates = _recent_summaries()
+        if not candidates:
+            return [], ""
+
+        by_id = {c["id"]: c for c in candidates}
+        listing = "\n".join(
+            f"[{c['id']}, {(c['created_at'] or '')[:10]}]: {_oneline(c['summary'])}"
+            for c in candidates
+        )
+        system = (
+            "You are the council's memory. Given a new pitch and a list of past "
+            "council sessions (each with an id, date, and one-line summary), decide "
+            "which past sessions are genuinely relevant to the new pitch — a similar "
+            "topic, decision, tension, or theme. Be selective: relevance must be "
+            "real, not superficial word overlap."
+        )
+        user = (
+            f"NEW PITCH:\n{pitch}\n\n"
+            f"PAST SESSIONS:\n{listing}\n\n"
+            "Return ONLY a JSON array of the integer ids of the relevant past "
+            "sessions, most relevant first, e.g. [12, 9]. If none are relevant, "
+            "return []. No other text."
+        )
+        # Generous cap on the critical path: the recall call may pay Ollama's
+        # 5-20s cold-start (it loads the model the agent turns then reuse). If it
+        # overruns we degrade to no memory rather than freeze the "Convening" overlay.
+        async with asyncio.timeout(45.0):
+            raw = await ollama_chat(
+                client,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+        ids = parse_id_list(raw, set(by_id))
+        if not ids:
+            return [], ""
+
+        dossier_lines = "\n".join(
+            f"- ({(by_id[i]['created_at'] or '')[:10]}) {_oneline(by_id[i]['summary'])}"
+            for i in ids
+        )
+        dossier = (
+            "Earlier council discussions you remember. Reference them naturally "
+            "by what was discussed, not by number or date:\n" + dossier_lines
+        )
+        return ids, dossier
+    except Exception as e:
+        # Recall is a nice-to-have; degrade to no memory rather than break /pitch.
+        print(f"[council] recall failed, continuing without memory: {e}")
+        return [], ""
+
+
+# ─────────── Routes ───────────
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse(ROOT / "templates" / "index.html")
+
+
+@app.get("/health/ollama")
+async def health_ollama() -> dict:
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(f"{OLLAMA_URL}/api/version")
+        resp.raise_for_status()
+        return resp.json()
+
+
+# Generous read timeout: a local model can take 5-20s to load on a cold start
+# and then streams token-by-token, so only a truly hung stream should surface as
+# an error. Recall passes its own asyncio.timeout; /wrap opens its own client.
+PITCH_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+
+
 @app.post("/pitch")
 async def pitch(body: PitchBody) -> EventSourceResponse:
-    async def event_stream():
+    async def event_stream() -> AsyncIterator[dict]:
         transcript: list[dict] = []
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
+            async with httpx.AsyncClient(timeout=PITCH_TIMEOUT) as client:
+                session_ids, dossier = await recall_relevant_sessions(
+                    client, body.pitch
+                )
+                yield {
+                    "event": "memory_loaded",
+                    "data": json.dumps({"session_ids": session_ids}),
+                }
+
                 for round_num in (1, 2):
                     for persona in PERSONAS:
                         name = persona["name"]
@@ -133,40 +413,30 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
                             "data": json.dumps({"agent": name, "round": round_num}),
                         }
 
-                        payload = {
-                            "model": MODEL,
-                            "stream": True,
-                            "think": False,
-                            "options": {"num_ctx": 16384},
-                            "messages": build_messages(
-                                persona, body.pitch, transcript, round_num
-                            ),
-                        }
-
+                        messages = build_messages(
+                            persona, body.pitch, transcript, round_num, dossier
+                        )
                         chunks: list[str] = []
-                        async with client.stream(
-                            "POST", f"{OLLAMA_URL}/api/chat", json=payload
-                        ) as resp:
-                            resp.raise_for_status()
-                            async for line in resp.aiter_lines():
-                                if not line:
-                                    continue
-                                chunk = json.loads(line)
-                                token = chunk.get("message", {}).get("content", "")
-                                if token:
-                                    chunks.append(token)
-                                    yield {
-                                        "event": "token",
-                                        "data": json.dumps(
-                                            {
-                                                "agent": name,
-                                                "round": round_num,
-                                                "token": token,
-                                            }
-                                        ),
-                                    }
-                                if chunk.get("done"):
-                                    break
+                        turn_error: Exception | None = None
+                        try:
+                            async for text in stream_ollama_text(client, messages):
+                                chunks.append(text)
+                                yield {
+                                    "event": "token",
+                                    "data": json.dumps(
+                                        {
+                                            "agent": name,
+                                            "round": round_num,
+                                            "token": text,
+                                        }
+                                    ),
+                                }
+                        except Exception as e:
+                            # Don't let one failed turn freeze the UI. Fall through
+                            # to finalize this turn (agent_done clears the caret and
+                            # keeps the partial text), then surface why and stop.
+                            turn_error = e
+                            print(f"[council] turn failed ({name} r{round_num}): {e}")
 
                         transcript.append(
                             {
@@ -175,11 +445,19 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
                                 "content": "".join(chunks),
                             }
                         )
-
                         yield {
                             "event": "agent_done",
                             "data": json.dumps({"agent": name, "round": round_num}),
                         }
+
+                        if turn_error is not None:
+                            yield {
+                                "event": "error",
+                                "data": json.dumps(
+                                    {"message": _stream_error_text(turn_error)}
+                                ),
+                            }
+                            return
 
             yield {"event": "discussion_complete", "data": json.dumps({})}
         except Exception as e:
@@ -194,40 +472,71 @@ async def wrap(body: WrapBody) -> dict:
         f"PITCH:\n{body.pitch}\n\n"
         f"TRANSCRIPT:\n{format_transcript_for_wrap(body.transcript)}\n\n"
         "Produce two outputs:\n"
-        "(1) SYNTHESIS: 3–5 sentences capturing the council's collective view, "
+        "(1) SYNTHESIS: 3-5 sentences capturing the council's collective view, "
         "including disagreements.\n"
         "(2) SUMMARY: one sentence for memory recall.\n\n"
         'Format as JSON: {"synthesis": "...", "summary": "..."}. '
         "JSON only, no preamble."
     )
-
-    payload = {
-        "model": MODEL,
-        "stream": False,
-        "think": False,
-        "options": {"num_ctx": 16384},
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are the council secretary. "
-                    "Below is a transcript of a council discussion."
-                ),
-            },
-            {"role": "user", "content": user_message},
-        ],
-    }
+    system = (
+        "You are the council secretary. Below is a transcript of a council discussion."
+    )
 
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
-            resp = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
-            resp.raise_for_status()
-            raw = resp.json().get("message", {}).get("content", "")
-    except httpx.ConnectError:
-        raise HTTPException(503, "Cannot reach Ollama at localhost:11434. Is it running?")
-    except httpx.TimeoutException:
-        raise HTTPException(504, "Synthesis timed out.")
+            raw = await ollama_chat(
+                client,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_message},
+                ],
+            )
+    except httpx.ConnectError as e:
+        raise HTTPException(
+            503, "Cannot reach Ollama at localhost:11434. Is it running?"
+        ) from e
+    except httpx.TimeoutException as e:
+        raise HTTPException(504, "Synthesis timed out.") from e
     except httpx.HTTPStatusError as e:
-        raise HTTPException(502, f"Ollama returned HTTP {e.response.status_code}")
+        raise HTTPException(502, f"Ollama returned HTTP {e.response.status_code}") from e
 
-    return parse_synthesis(raw)
+    result = parse_synthesis(raw)
+
+    # Persist the session. Store the transcript in the exact {agent, round,
+    # content} shape the frontend produces, so replay round-trips cleanly.
+    transcript_json = json.dumps([e.model_dump() for e in body.transcript])
+    with _db() as conn:
+        cur = conn.execute(
+            "INSERT INTO sessions (pitch, transcript_json, synthesis, summary) "
+            "VALUES (?, ?, ?, ?)",
+            (body.pitch, transcript_json, result["synthesis"], result["summary"]),
+        )
+        session_id = cur.lastrowid
+
+    return {**result, "session_id": session_id}
+
+
+@app.get("/sessions")
+async def list_sessions() -> list[dict]:
+    """Archive index, newest first. id DESC breaks ties within the same second."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT id, pitch, summary, created_at FROM sessions "
+            "ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/sessions/{session_id}")
+async def get_session(session_id: int) -> dict:
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT id, pitch, transcript_json, synthesis, summary, created_at "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Session not found")
+    data = dict(row)
+    data["transcript"] = json.loads(data.pop("transcript_json"))
+    return data

@@ -99,8 +99,8 @@ Personas are validated at startup: each must have a non-empty `name` and
 - [x] Two-round discussion with dynamic council size
 - [x] Live SSE streaming, per-agent blocks
 - [x] Synthesis + one-line summary on **Wrap**
-- [ ] SQLite persistence
-- [ ] Memory recall — relevant prior sessions injected into each persona
+- [x] SQLite persistence + browsable session archive
+- [x] Memory recall — relevant prior sessions injected into each persona
 
 ## Stack
 
