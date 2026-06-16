@@ -223,6 +223,9 @@
   .text-btn:disabled:hover .arrow {
     transform: none;
   }
+  .restart-btn {
+    margin-top: var(--space-3);
+  }
 
   /* ─────────── Convening state ─────────── */
   .convening {
@@ -741,6 +744,19 @@
     t.appendChild(e);
   }
 
+  // Re-render a usable control after a mid-stream failure: the original Convene
+  // button lives inside #pitch-section, which is replaced once the stream opens,
+  // so a fresh "Start over" (full reload) is the reliable path back.
+  function offerRestart() {
+    const section = document.getElementById("pitch-section");
+    if (section.querySelector(".restart-btn")) return;
+    const btn = document.createElement("button");
+    btn.className = "text-btn restart-btn fade-in";
+    btn.innerHTML = `<span>Start over</span><span class="arrow">→</span>`;
+    btn.addEventListener("click", () => window.location.reload());
+    section.appendChild(btn);
+  }
+
   async function fadeOutConvening() {
     const convening = document.getElementById("convening");
     convening.classList.add("fade-out");
@@ -832,11 +848,16 @@
     let conveningHidden = false;
     let currentBody = null;
     let currentRound = null;
+    let streamErrored = false;
 
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      // Append the raw decoded text, then normalize CRLF across the WHOLE buffer.
+      // Normalizing per-chunk would miss a \r\n that a read splits across chunks,
+      // merging two SSE frames and silently dropping both when JSON.parse fails.
+      buffer += decoder.decode(value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n");
 
       let sepIdx;
       while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
@@ -899,8 +920,23 @@
         } else if (event === "error") {
           if (!conveningHidden) { hideConveningImmediate(); conveningHidden = true; }
           showError(payload.message || "The council errored.");
+          streamErrored = true;
         }
       }
+    }
+
+    // A turn failed mid-discussion: the server stops without discussion_complete,
+    // and #pitch-section (with the Convene button) has already been replaced — so
+    // without this the user is stranded with reload as the only way out. Let them
+    // synthesize whatever the council did manage to say, and always offer a clean
+    // restart.
+    if (streamErrored) {
+      if (state.transcript.length > 0) {
+        const action = document.getElementById("synthesis-action");
+        action.classList.remove("hidden");
+        action.classList.add("fade-in");
+      }
+      offerRestart();
     }
     return true;
   }

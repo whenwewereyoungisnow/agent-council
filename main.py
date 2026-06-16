@@ -158,8 +158,21 @@ def format_transcript_for_wrap(transcript: list[TranscriptEntry]) -> str:
     return "\n\n".join(fmt_turn(e.agent, e.round, e.content) for e in transcript)
 
 
+def _first_sentence(text: str, limit: int = 200) -> str:
+    """A one-line summary fallback: the first sentence of ``text``, capped."""
+    flat = " ".join(text.split())
+    match = re.search(r".+?[.!?](?:\s|$)", flat)
+    candidate = match.group().strip() if match else flat
+    return candidate[:limit].rstrip()
+
+
 def parse_synthesis(raw: str) -> dict:
-    """Parse the model's JSON output. Falls back to plain text if malformed."""
+    """Parse the model's JSON output. Falls back to plain text if malformed.
+
+    A blank summary makes the session invisible to memory recall (which filters
+    out empty summaries), so whenever the summary is missing — a truncated or
+    non-JSON response — derive a one-line summary from the synthesis text.
+    """
     candidates = [raw.strip()]
     start, end = raw.find("{"), raw.rfind("}")
     if start != -1 and end > start:
@@ -171,9 +184,15 @@ def parse_synthesis(raw: str) -> dict:
         except json.JSONDecodeError:
             continue
         if isinstance(obj, dict) and "synthesis" in obj and "summary" in obj:
-            return {"synthesis": str(obj["synthesis"]), "summary": str(obj["summary"])}
+            synthesis = str(obj["synthesis"])
+            summary = str(obj["summary"]).strip()
+            return {
+                "synthesis": synthesis,
+                "summary": summary or _first_sentence(synthesis),
+            }
 
-    return {"synthesis": raw.strip(), "summary": ""}
+    text = raw.strip()
+    return {"synthesis": text, "summary": _first_sentence(text)}
 
 
 # ─────────── Anthropic client ───────────
@@ -232,8 +251,9 @@ async def stream_claude_text(
     """Yield text chunks from a streaming /v1/messages call.
 
     Raises AgentStreamError on a non-200 response (reads the body so 401/429
-    carry Anthropic's real reason) or on a mid-stream `error` frame, rather than
-    silently ending the stream.
+    carry Anthropic's real reason), on a mid-stream `error` frame, or if the
+    stream ends without a `message_stop` terminal event — rather than silently
+    ending the stream or committing a truncated turn as if it were complete.
     """
     payload = _claude_payload(
         system, user, model=model, stream=True, max_tokens=MAX_TOKENS_AGENT
@@ -270,6 +290,11 @@ async def stream_claude_text(
                 raise AgentStreamError(_anthropic_error_message(chunk))
             elif ctype == "message_stop":
                 return
+        # The stream ended without a message_stop terminal event — a clean EOF
+        # mid-message (e.g. an upstream proxy closing the connection early). The
+        # text so far is partial, so surface a cut-off error instead of letting
+        # /pitch record a truncated turn as the agent's complete contribution.
+        raise AgentStreamError("The model's response was cut off.")
 
 
 async def claude_chat(
