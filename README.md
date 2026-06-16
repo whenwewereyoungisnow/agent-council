@@ -12,6 +12,30 @@ summary for later recall.
 Single-user. Runs entirely on your laptop. Uses
 [Ollama](https://ollama.com) for inference (`qwen3.6:latest`).
 
+## Branches: `local` vs `main`
+
+This is the **`local`** branch — the original, fully offline version. It talks
+to Ollama on your laptop, so your pitches never leave the machine and there's
+no API bill; the trade-off is that it needs Ollama (and the GPU to run it).
+
+The **`main`** branch is the deployable cousin: it swaps Ollama for the
+**Anthropic API** so it can run on [Railway](https://railway.app) with no GPU,
+and adds the pieces a hosted, multi-session service needs.
+
+| | `local` (this branch) | `main` |
+|---|---|---|
+| Inference | Ollama on your laptop (`qwen3.6:latest`) | Anthropic API (`claude-sonnet-4-6`) |
+| Where it runs | Your machine only, offline | Local **or** deployed to Railway |
+| Your data | Never leaves the laptop | Pitches sent to Anthropic; sessions stored server-side |
+| Auth | None | HTTP Basic Auth (enabled by env vars in prod) |
+| Persistence | None | SQLite session archive (`/sessions`) |
+| Memory recall | None | Relevant past sessions injected into each new pitch |
+| Model picker | Single model | `/models` allowlist: Balanced · Deep · Fast |
+| Secrets needed | None | `ANTHROPIC_API_KEY` (+ `COUNCIL_USER` / `COUNCIL_PASSWORD` in prod) |
+
+**Use `local`** for private, offline, no-cost deliberation on your own hardware.
+**Use `main`** when you want it hosted and reachable from anywhere.
+
 ## Setup
 
 Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
