@@ -30,6 +30,15 @@ Default `claude-sonnet-4-6` (override via `ANTHROPIC_MODEL` env var).
   with `role: system`. Mixing those up is a silent failure mode.
 - Streaming: enabled for agent turns. Non-streaming for the wrap synthesis.
 - Cold start is just network latency (~300ms-1s), not model load.
+- **Model picker.** `/pitch` and `/wrap` take an optional `model`, validated
+  against a server-side allowlist `MODEL_CHOICES`: `claude-sonnet-4-6` (Balanced),
+  `claude-opus-4-8` (Deep), `claude-haiku-4-5` (Fast). Omitted → `DEFAULT_MODEL`
+  (the `ANTHROPIC_MODEL` env default). The chosen model governs both the agent
+  turns and the wrap synthesis; the frontend reads the picker once at convene
+  time and reuses it for the wrap. `GET /models` is the allowlist's single source
+  of truth for the UI. Never forward a raw client model string to the API.
+- **Memory recall always uses Haiku** (`RECALL_MODEL = claude-haiku-4-5`),
+  independent of the discussion model — relevance-ranking is a Haiku-class task.
 
 ## Auth
 HTTP Basic Auth, applied as a global FastAPI dependency. Gated by env vars:
@@ -51,7 +60,7 @@ HTTP Basic Auth, applied as a global FastAPI dependency. Gated by env vars:
 
 ```
 POST /pitch
-  body:    { "pitch": "..." }
+  body:    { "pitch": "...", "model": "..." }   ("model" optional; allowlisted)
   returns: SSE stream
     events:
       - { event: "memory_loaded",     data: { session_ids: [int, ...] } }   (Phase 5)
@@ -63,9 +72,12 @@ POST /pitch
       - { event: "error",             data: { message: "..." } }   (on failure)
 
 POST /wrap
-  body:    { "transcript": [...], "pitch": "...", "memory_session_ids": [...] }
+  body:    { "transcript": [...], "pitch": "...", "model": "..." }   ("model" optional; allowlisted)
   returns: { "synthesis": "...", "summary": "...", "session_id": int }   (Phase 5: + session_id)
   side:    persists session row to SQLite (Phase 5)
+
+GET  /models
+  returns: { models: [{ id, label }, ...], default: "<model id>" }   (picker source of truth)
 
 GET  /sessions                                                            (Phase 5)
   returns: [{ id, pitch, summary, created_at }, ...]   (most-recent first)
@@ -157,8 +169,9 @@ each entry, and iterates by length — never hardcode the count.
   Now respond as the <ThisAgentName>. Speak in your own voice. Two paragraphs maximum.
   ```
 - **Memory dossier format** when injected into system prompts:
-  `"Past relevant council sessions you should remember:\n- [Session N, date]: <summary>\n- [Session M, date]: <summary>"`.
-  Empty if nothing relevant.
+  `"Earlier council discussions you remember. Reference them naturally by what was discussed, not by number or date:\n- (date) <summary>\n- (date) <summary>"`.
+  Empty if nothing relevant. The persona-facing dossier omits the session id so
+  the council references discussions by substance, not "Session N".
 - **Relevance check prompt** (Phase 5) asks for a JSON array of integer IDs
   only. Parse robustly — empty array on parse failure (don't crash the
   pitch flow over a bad JSON response).

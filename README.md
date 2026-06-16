@@ -60,7 +60,12 @@ The repo is Railway-ready. Steps:
    first hit and caches the credentials.
 
 Cost ballpark on Sonnet 4.6: ~$0.13 per full discussion (10 streamed agent
-turns plus the wrap). Haiku 4.5 is ~$0.05; Opus 4.7 is ~$0.67.
+turns plus the wrap). Haiku 4.5 is ~$0.05; Opus 4.8 is ~$0.67.
+
+The pitch screen has a per-discussion **Deliberation** picker — **Balanced**
+(`claude-sonnet-4-6`), **Deep** (`claude-opus-4-8`), **Fast** (`claude-haiku-4-5`)
+— validated against a server-side allowlist. Memory recall always runs on Haiku
+regardless of the pick, since relevance-ranking doesn't need the council's voice.
 
 ## Customizing the council
 

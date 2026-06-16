@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>The Council</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='30' fill='%23B33A2A'/></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,800;1,9..144,400;1,9..144,500;1,9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -142,6 +143,50 @@
     font-size: 13px;
     color: var(--ink-faint);
     font-style: italic;
+  }
+
+  /* ─────────── Model picker ─────────── */
+  .pitch-controls {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+  .model-picker {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.55em;
+  }
+  .model-picker-label {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .model-select {
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink);
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--rule);
+    padding: 0.1em 1.3em 0.25em 0.15em;
+    cursor: pointer;
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%238A8377' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.1em center;
+    background-size: 0.7em;
+    transition: border-color 200ms ease, color 200ms ease;
+  }
+  .model-select:hover,
+  .model-select:focus {
+    border-bottom-color: var(--ink-soft);
+    color: var(--accent);
   }
 
   /* ─────────── Calm text button ─────────── */
@@ -512,10 +557,16 @@
       ></textarea>
       <div class="pitch-actions">
         <span class="pitch-hint">A decision, a question, anything you're turning over.</span>
-        <button id="convene-btn" class="text-btn">
-          <span>Convene the council</span>
-          <span class="arrow">→</span>
-        </button>
+        <div class="pitch-controls">
+          <label class="model-picker">
+            <span class="model-picker-label">Deliberation</span>
+            <select id="model-select" class="model-select" aria-label="Council deliberation depth"></select>
+          </label>
+          <button id="convene-btn" class="text-btn">
+            <span>Convene the council</span>
+            <span class="arrow">→</span>
+          </button>
+        </div>
       </div>
     </section>
 
@@ -714,6 +765,7 @@
     transcript: [],
     tokenBuffers: {},
     wrapAbort: null,
+    model: null,          // chosen at convene time; reused for the wrap
   };
 
   // ─────────── /pitch flow ───────────
@@ -723,6 +775,11 @@
     state.pitch = pitchText;
     state.transcript = [];
     state.tokenBuffers = {};
+    // Capture the model now — the picker lives in #pitch-section, which gets
+    // replaced once the stream opens. Empty value (picker not yet loaded) → null
+    // so the server falls back to its default.
+    const sel = document.getElementById("model-select");
+    state.model = sel && sel.value ? sel.value : null;
 
     // Show convening overlay while we wait for /pitch to respond. The pitch
     // input stays visible underneath — only fades once the stream is open.
@@ -735,7 +792,7 @@
       resp = await fetch("/pitch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pitch: pitchText }),
+        body: JSON.stringify({ pitch: pitchText, model: state.model }),
       });
     } catch (err) {
       hideConveningImmediate();
@@ -869,7 +926,7 @@
       const resp = await fetch("/wrap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pitch: state.pitch, transcript: state.transcript }),
+        body: JSON.stringify({ pitch: state.pitch, transcript: state.transcript, model: state.model }),
         signal: myAbort.signal,
       });
       if (!resp.ok) {
@@ -930,6 +987,29 @@
     // The session is now persisted (/wrap wrote it) — refresh the archive so it
     // shows up without a page reload.
     loadArchive();
+  }
+
+  // ─────────── Model picker ───────────
+  async function loadModels() {
+    const sel = document.getElementById("model-select");
+    if (!sel) return;
+    let data;
+    try {
+      const resp = await fetch("/models");
+      if (!resp.ok) return;
+      data = await resp.json();
+    } catch (err) {
+      console.error(err);
+      return;
+    }
+    sel.innerHTML = "";
+    for (const m of data.models || []) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.label;
+      if (m.id === data.default) opt.selected = true;
+      sel.appendChild(opt);
+    }
   }
 
   // ─────────── Archive (persisted sessions) ───────────
@@ -1056,8 +1136,9 @@
     const conveneBtn = document.getElementById("convene-btn");
     const synthBtn = document.getElementById("synthesis-btn");
 
-    // Load the persisted-session archive on first paint.
+    // Load the persisted-session archive and model picker on first paint.
     loadArchive();
+    loadModels();
 
     let running = false;
     conveneBtn.addEventListener("click", async () => {

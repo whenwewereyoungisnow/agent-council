@@ -24,7 +24,22 @@ if not ANTHROPIC_API_KEY:
         "or in the Railway service variables."
     )
 
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+# Models the picker offers, in display order. Keys are the API model IDs we will
+# actually forward; values are the labels the UI shows. A client-supplied model
+# is validated against these keys (we never forward an arbitrary string), so this
+# dict is the single source of truth for both the API and the frontend's picker.
+MODEL_CHOICES = {
+    "claude-sonnet-4-6": "Balanced",
+    "claude-opus-4-8": "Deep",
+    "claude-haiku-4-5": "Fast",
+}
+# Default when a request omits `model`. ANTHROPIC_MODEL can override it to any
+# string (admin trust); the allowlist only constrains client-chosen models.
+DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+# Memory recall is relevance-ranking, not council voice — a Haiku-class task.
+# Pin it to Haiku regardless of the discussion model: cheaper, faster first token.
+RECALL_MODEL = "claude-haiku-4-5"
+
 MAX_TOKENS_AGENT = 1024
 MAX_TOKENS_WRAP = 1024
 MAX_TOKENS_RECALL = 256  # relevance check returns only a short JSON array of ids
@@ -118,6 +133,7 @@ app = FastAPI(dependencies=[Depends(require_auth)])
 # ─────────── Models ───────────
 class PitchBody(BaseModel):
     pitch: str = Field(..., min_length=1)
+    model: str | None = None
 
 
 class TranscriptEntry(BaseModel):
@@ -129,6 +145,7 @@ class TranscriptEntry(BaseModel):
 class WrapBody(BaseModel):
     pitch: str = Field(..., min_length=1)
     transcript: list[TranscriptEntry] = Field(..., min_length=1)
+    model: str | None = None
 
 
 # ─────────── Formatting ───────────
@@ -167,9 +184,11 @@ def _anthropic_headers() -> dict:
     }
 
 
-def _claude_payload(system: str, user: str, *, stream: bool, max_tokens: int) -> dict:
+def _claude_payload(
+    system: str, user: str, *, model: str, stream: bool, max_tokens: int
+) -> dict:
     return {
-        "model": MODEL,
+        "model": model,
         "max_tokens": max_tokens,
         "system": system,
         "messages": [{"role": "user", "content": user}],
@@ -177,13 +196,59 @@ def _claude_payload(system: str, user: str, *, stream: bool, max_tokens: int) ->
     }
 
 
-async def stream_claude_text(client: httpx.AsyncClient, system: str, user: str):
-    """Yields text chunks from a streaming /v1/messages call."""
-    payload = _claude_payload(system, user, stream=True, max_tokens=MAX_TOKENS_AGENT)
+class AgentStreamError(Exception):
+    """A streamed agent turn failed. The message is safe to show the user."""
+
+
+def _anthropic_error_message(body: object, status: int | None = None) -> str:
+    """Human reason from an Anthropic error body: {error: {type, message}}."""
+    err = body.get("error") if isinstance(body, dict) else None
+    parts = (
+        [str(err[k]) for k in ("type", "message") if err.get(k)]
+        if isinstance(err, dict)
+        else []
+    )
+    detail = ": ".join(parts) if parts else "unknown error"
+    if status is not None:
+        return f"Anthropic API error (HTTP {status}): {detail}"
+    return f"Anthropic API error: {detail}"
+
+
+def _stream_error_text(exc: Exception) -> str:
+    """A user-facing reason for a failed agent turn."""
+    if isinstance(exc, AgentStreamError):
+        return str(exc)
+    if isinstance(exc, httpx.TimeoutException):
+        return "The model stopped responding (timeout)."
+    if isinstance(exc, httpx.HTTPError):
+        return "Lost the connection to the Anthropic API."
+    return f"Unexpected error: {exc}"
+
+
+async def stream_claude_text(
+    client: httpx.AsyncClient, system: str, user: str, model: str
+):
+    """Yield text chunks from a streaming /v1/messages call.
+
+    Raises AgentStreamError on a non-200 response (reads the body so 401/429
+    carry Anthropic's real reason) or on a mid-stream `error` frame, rather than
+    silently ending the stream.
+    """
+    payload = _claude_payload(
+        system, user, model=model, stream=True, max_tokens=MAX_TOKENS_AGENT
+    )
     async with client.stream(
         "POST", ANTHROPIC_URL, headers=_anthropic_headers(), json=payload
     ) as resp:
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            # A streamed response leaves the body unread; pull it explicitly so
+            # the error carries Anthropic's message, not just a bare status.
+            raw = await resp.aread()
+            try:
+                body = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                body = None
+            raise AgentStreamError(_anthropic_error_message(body, resp.status_code))
         async for line in resp.aiter_lines():
             if not line.startswith("data: "):
                 continue
@@ -191,21 +256,28 @@ async def stream_claude_text(client: httpx.AsyncClient, system: str, user: str):
                 chunk = json.loads(line[6:])
             except json.JSONDecodeError:
                 continue
-            if chunk.get("type") == "content_block_delta":
+            ctype = chunk.get("type")
+            if ctype == "content_block_delta":
                 delta = chunk.get("delta") or {}
                 if delta.get("type") == "text_delta":
                     text = delta.get("text", "")
                     if text:
                         yield text
-            elif chunk.get("type") == "message_stop":
+            elif ctype == "error":
+                # Anthropic can emit an error frame after a 200 (e.g. overloaded
+                # mid-generation) then stop. Surface it instead of swallowing.
+                raise AgentStreamError(_anthropic_error_message(chunk))
+            elif ctype == "message_stop":
                 return
 
 
 async def claude_chat(
-    client: httpx.AsyncClient, system: str, user: str, max_tokens: int
+    client: httpx.AsyncClient, system: str, user: str, model: str, max_tokens: int
 ) -> str:
     """Non-streaming /v1/messages call. Returns concatenated text content."""
-    payload = _claude_payload(system, user, stream=False, max_tokens=max_tokens)
+    payload = _claude_payload(
+        system, user, model=model, stream=False, max_tokens=max_tokens
+    )
     resp = await client.post(
         ANTHROPIC_URL, headers=_anthropic_headers(), json=payload, timeout=180.0
     )
@@ -326,18 +398,20 @@ async def recall_relevant_sessions(
         # Cap recall on the critical path so a slow API call can't freeze the
         # discussion behind the "Convening" overlay; we degrade to no memory.
         async with asyncio.timeout(20.0):
-            raw = await claude_chat(client, system, user, MAX_TOKENS_RECALL)
+            raw = await claude_chat(
+                client, system, user, RECALL_MODEL, MAX_TOKENS_RECALL
+            )
         ids = parse_id_list(raw, set(by_id))
         if not ids:
             return [], ""
 
         dossier_lines = "\n".join(
-            f"- [Session {i}, {(by_id[i]['created_at'] or '')[:10]}]: "
-            f"{_oneline(by_id[i]['summary'])}"
+            f"- ({(by_id[i]['created_at'] or '')[:10]}) {_oneline(by_id[i]['summary'])}"
             for i in ids
         )
         dossier = (
-            "Past relevant council sessions you should remember:\n" + dossier_lines
+            "Earlier council discussions you remember. Reference them naturally "
+            "by what was discussed, not by number or date:\n" + dossier_lines
         )
         return ids, dossier
     except Exception as e:
@@ -352,12 +426,33 @@ async def index() -> FileResponse:
     return FileResponse(ROOT / "templates" / "index.html")
 
 
+# A 60s read timeout converts a silently hung agent stream into a surfaced error
+# instead of an unbounded wait. Recall and /wrap pass their own per-request
+# timeouts, so this governs only the streaming agent turns.
+PITCH_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+
+
+def resolve_model(requested: str | None) -> str:
+    """Validate a client-chosen model against the allowlist, or fall back to the
+    configured default. Raises 400 on an unknown model so an arbitrary client
+    string is never forwarded to the Anthropic API."""
+    if not requested:
+        return DEFAULT_MODEL
+    if requested not in MODEL_CHOICES:
+        raise HTTPException(400, f"Unknown model: {requested!r}")
+    return requested
+
+
 @app.post("/pitch")
 async def pitch(body: PitchBody) -> EventSourceResponse:
+    # Validate before the stream opens, so a bad model is a clean 400 the
+    # frontend can show rather than a mid-stream error.
+    model = resolve_model(body.model)
+
     async def event_stream():
         transcript: list[dict] = []
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
+            async with httpx.AsyncClient(timeout=PITCH_TIMEOUT) as client:
                 session_ids, dossier = await recall_relevant_sessions(
                     client, body.pitch
                 )
@@ -378,18 +473,28 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
                             persona, body.pitch, transcript, round_num, dossier
                         )
                         chunks: list[str] = []
-                        async for text in stream_claude_text(client, system, user):
-                            chunks.append(text)
-                            yield {
-                                "event": "token",
-                                "data": json.dumps(
-                                    {
-                                        "agent": name,
-                                        "round": round_num,
-                                        "token": text,
-                                    }
-                                ),
-                            }
+                        turn_error: Exception | None = None
+                        try:
+                            async for text in stream_claude_text(
+                            client, system, user, model
+                        ):
+                                chunks.append(text)
+                                yield {
+                                    "event": "token",
+                                    "data": json.dumps(
+                                        {
+                                            "agent": name,
+                                            "round": round_num,
+                                            "token": text,
+                                        }
+                                    ),
+                                }
+                        except Exception as e:
+                            # Don't let one failed turn freeze the UI. Fall through
+                            # to finalize this turn (agent_done clears the caret and
+                            # keeps the partial text), then surface why and stop.
+                            turn_error = e
+                            print(f"[council] turn failed ({name} r{round_num}): {e}")
 
                         transcript.append(
                             {
@@ -403,6 +508,15 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
                             "data": json.dumps({"agent": name, "round": round_num}),
                         }
 
+                        if turn_error is not None:
+                            yield {
+                                "event": "error",
+                                "data": json.dumps(
+                                    {"message": _stream_error_text(turn_error)}
+                                ),
+                            }
+                            return
+
             yield {"event": "discussion_complete", "data": json.dumps({})}
         except Exception as e:
             yield {"event": "error", "data": json.dumps({"message": str(e)})}
@@ -412,6 +526,7 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
 
 @app.post("/wrap")
 async def wrap(body: WrapBody) -> dict:
+    model = resolve_model(body.model)
     user_message = (
         f"PITCH:\n{body.pitch}\n\n"
         f"TRANSCRIPT:\n{format_transcript_for_wrap(body.transcript)}\n\n"
@@ -429,7 +544,9 @@ async def wrap(body: WrapBody) -> dict:
 
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
-            raw = await claude_chat(client, system, user_message, MAX_TOKENS_WRAP)
+            raw = await claude_chat(
+                client, system, user_message, model, MAX_TOKENS_WRAP
+            )
     except httpx.ConnectError:
         raise HTTPException(503, "Cannot reach the Anthropic API.")
     except httpx.TimeoutException:
@@ -451,6 +568,16 @@ async def wrap(body: WrapBody) -> dict:
         session_id = cur.lastrowid
 
     return {**result, "session_id": session_id}
+
+
+@app.get("/models")
+async def list_models() -> dict:
+    """The picker's options and default. The allowlist is the single source of
+    truth; the frontend builds its dropdown from this."""
+    return {
+        "models": [{"id": m, "label": label} for m, label in MODEL_CHOICES.items()],
+        "default": DEFAULT_MODEL,
+    }
 
 
 @app.get("/sessions")
