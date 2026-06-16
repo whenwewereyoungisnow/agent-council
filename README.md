@@ -106,8 +106,8 @@ Personas are validated at startup: each must have a non-empty `name` and
 - [x] Live SSE streaming, per-agent blocks
 - [x] Synthesis + one-line summary on **Wrap**
 - [x] Anthropic Claude API backend; Railway-ready with Basic Auth
-- [ ] SQLite persistence (Phase 5 — needs a Railway Volume or Postgres for production)
-- [ ] Memory recall — relevant prior sessions injected into each persona
+- [x] SQLite persistence + session archive (on Railway, mount a Volume and point `COUNCIL_DB_PATH` at it)
+- [x] Memory recall — relevant prior sessions injected into each persona
 
 ## Stack
 
