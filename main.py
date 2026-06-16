@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import sqlite3
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import httpx
@@ -50,7 +51,7 @@ COUNCIL_PASSWORD = os.environ.get("COUNCIL_PASSWORD")
 _basic = HTTPBasic(auto_error=False)
 
 
-def require_auth(creds: HTTPBasicCredentials | None = Depends(_basic)) -> None:
+def require_auth(creds: HTTPBasicCredentials | None = Depends(_basic)) -> None:  # noqa: B008
     """No-op locally (env vars unset). Enforces Basic Auth in deployment."""
     if not COUNCIL_USER or not COUNCIL_PASSWORD:
         return
@@ -227,7 +228,7 @@ def _stream_error_text(exc: Exception) -> str:
 
 async def stream_claude_text(
     client: httpx.AsyncClient, system: str, user: str, model: str
-):
+) -> AsyncIterator[str]:
     """Yield text chunks from a streaming /v1/messages call.
 
     Raises AgentStreamError on a non-200 response (reads the body so 401/429
@@ -449,7 +450,7 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
     # frontend can show rather than a mid-stream error.
     model = resolve_model(body.model)
 
-    async def event_stream():
+    async def event_stream() -> AsyncIterator[dict]:
         transcript: list[dict] = []
         try:
             async with httpx.AsyncClient(timeout=PITCH_TIMEOUT) as client:
@@ -476,8 +477,8 @@ async def pitch(body: PitchBody) -> EventSourceResponse:
                         turn_error: Exception | None = None
                         try:
                             async for text in stream_claude_text(
-                            client, system, user, model
-                        ):
+                                client, system, user, model
+                            ):
                                 chunks.append(text)
                                 yield {
                                     "event": "token",
@@ -531,15 +532,14 @@ async def wrap(body: WrapBody) -> dict:
         f"PITCH:\n{body.pitch}\n\n"
         f"TRANSCRIPT:\n{format_transcript_for_wrap(body.transcript)}\n\n"
         "Produce two outputs:\n"
-        "(1) SYNTHESIS: 3–5 sentences capturing the council's collective view, "
+        "(1) SYNTHESIS: 3-5 sentences capturing the council's collective view, "
         "including disagreements.\n"
         "(2) SUMMARY: one sentence for memory recall.\n\n"
         'Format as JSON: {"synthesis": "...", "summary": "..."}. '
         "JSON only, no preamble."
     )
     system = (
-        "You are the council secretary. "
-        "Below is a transcript of a council discussion."
+        "You are the council secretary. Below is a transcript of a council discussion."
     )
 
     try:
@@ -547,12 +547,14 @@ async def wrap(body: WrapBody) -> dict:
             raw = await claude_chat(
                 client, system, user_message, model, MAX_TOKENS_WRAP
             )
-    except httpx.ConnectError:
-        raise HTTPException(503, "Cannot reach the Anthropic API.")
-    except httpx.TimeoutException:
-        raise HTTPException(504, "Synthesis timed out.")
+    except httpx.ConnectError as e:
+        raise HTTPException(503, "Cannot reach the Anthropic API.") from e
+    except httpx.TimeoutException as e:
+        raise HTTPException(504, "Synthesis timed out.") from e
     except httpx.HTTPStatusError as e:
-        raise HTTPException(502, f"Anthropic returned HTTP {e.response.status_code}")
+        raise HTTPException(
+            502, f"Anthropic returned HTTP {e.response.status_code}"
+        ) from e
 
     result = parse_synthesis(raw)
 
